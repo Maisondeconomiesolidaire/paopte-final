@@ -1,0 +1,52 @@
+@import "tailwindcss";
+
+:root {
+  --background: #fffefd;
+  --foreground: #143c38;
+  --card: rgba(255, 255, 255, 0.8);
+  --card-foreground: #143c38;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family:
+    "Segoe UI",
+    "Helvetica Neue",
+    sans-serif;
+}
+
+code {
+  font-family:
+    "IBM Plex Mono",
+    "SFMono-Regular",
+    monospace;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+}
+
+@keyframes orbPulse {
+  0%,
+  100% {
+    transform: scale(0.94) rotate(0deg);
+    filter: saturate(1);
+  }
+  50% {
+    transform: scale(1.04) rotate(6deg);
+    filter: saturate(1.18);
+  }
+}
