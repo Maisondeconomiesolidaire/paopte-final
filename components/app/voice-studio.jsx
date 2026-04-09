@@ -2,9 +2,19 @@
 
 import { UserButton } from "@clerk/nextjs";
 import { useConversation } from "@elevenlabs/react";
-import { AudioLines, CalendarDays, Clock3, MessageSquare, Mic, ShieldAlert } from "lucide-react";
+import {
+  AudioLines,
+  CalendarDays,
+  CheckCircle2,
+  Clock3,
+  MessageSquare,
+  Mic,
+  Music4,
+  PauseCircle,
+  ShieldAlert,
+} from "lucide-react";
 import Image from "next/image";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation } from "convex/react";
 
 import { api } from "@/convex/_generated/api";
@@ -12,6 +22,17 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Orb } from "@/components/ui/orb";
+import {
+  beginSpotifyAuthorization,
+  clearSpotifySession,
+  exchangeSpotifyCodeForTokens,
+  hasSpotifySessionExpired,
+  loadSpotifySdk,
+  loadSpotifySession,
+  refreshSpotifyAccessToken,
+  saveSpotifySession,
+  spotifyApiFetch,
+} from "@/lib/spotify";
 
 const AGENT_ID = process.env.NEXT_PUBLIC_ELEVENLABS_AGENT_ID || "";
 const TRIAL_EXHAUSTED_MESSAGE = "Vous avez utilisé tous vos crédits, merci pour votre essai.";
@@ -28,11 +49,167 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
   const [toolNotice, setToolNotice] = useState("");
   const [localCreatedEvents, setLocalCreatedEvents] = useState([]);
   const [isConnecting, setIsConnecting] = useState(false);
+  const [sessionTimeZone, setSessionTimeZone] = useState(
+    Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"
+  );
+  const [spotifySession, setSpotifySession] = useState(null);
+  const [spotifyAccount, setSpotifyAccount] = useState(null);
+  const [spotifyStatusMessage, setSpotifyStatusMessage] = useState("");
+  const [spotifyError, setSpotifyError] = useState("");
+  const [spotifyNowPlaying, setSpotifyNowPlaying] = useState(null);
+  const [spotifyDeviceId, setSpotifyDeviceId] = useState("");
+  const [isSpotifyBusy, setIsSpotifyBusy] = useState(false);
+  const [isSpotifyReady, setIsSpotifyReady] = useState(false);
   const activeConversationRef = useRef(null);
+  const spotifyPlayerRef = useRef(null);
+  const spotifySdkPromiseRef = useRef(null);
   const createConversation = useMutation(api.conversations.start);
   const appendConversationMessage = useMutation(api.conversations.appendMessage);
   const finishConversation = useMutation(api.conversations.end);
   const createCalendarEvent = useMutation(api.events.createForCurrent);
+
+  function applySpotifySession(nextSession) {
+    setSpotifySession(nextSession);
+    if (nextSession) {
+      saveSpotifySession(nextSession);
+    } else {
+      clearSpotifySession();
+    }
+  }
+
+  async function ensureFreshSpotifyAccessToken() {
+    if (!spotifySession?.refreshToken) {
+      throw new Error("Spotify n'est pas connecté. Cliquez sur Connecter Spotify.");
+    }
+
+    if (!hasSpotifySessionExpired(spotifySession) && spotifySession.accessToken) {
+      return spotifySession.accessToken;
+    }
+
+    const refreshedSession = await refreshSpotifyAccessToken(spotifySession.refreshToken);
+    applySpotifySession(refreshedSession);
+    return refreshedSession.accessToken;
+  }
+
+  async function loadSpotifyAccount(accessToken) {
+    const me = await spotifyApiFetch("/me", accessToken);
+
+    if (me?.product !== "premium") {
+      throw new Error("Spotify Premium est requis pour la lecture depuis Papote.");
+    }
+
+    setSpotifyAccount({
+      displayName: me.display_name || "Compte Spotify",
+      email: me.email || "",
+      product: me.product || "",
+    });
+  }
+
+  async function ensureSpotifyDevice(accessToken) {
+    if (spotifyDeviceId) {
+      return spotifyDeviceId;
+    }
+
+    const devicesResponse = await spotifyApiFetch("/me/player/devices", accessToken);
+    const browserDevice = devicesResponse?.devices?.find((device) => device.name === "Papote");
+    const activeDevice = devicesResponse?.devices?.find((device) => device.is_active);
+    const device = browserDevice || activeDevice || devicesResponse?.devices?.[0];
+
+    if (!device?.id) {
+      throw new Error(
+        "Le lecteur Spotify n'est pas encore prêt. Rechargez la page puis cliquez sur Discuter."
+      );
+    }
+
+    setSpotifyDeviceId(device.id);
+    return device.id;
+  }
+
+  async function playSpotifySong(parameters) {
+    const searchQuery = buildSpotifySearchQuery(parameters);
+    if (!searchQuery) {
+      throw new Error("Le titre du morceau Spotify est manquant.");
+    }
+
+    setIsSpotifyBusy(true);
+    setSpotifyError("");
+
+    try {
+      const accessToken = await ensureFreshSpotifyAccessToken();
+      const searchParams = new URLSearchParams({
+        q: searchQuery,
+        type: "track",
+        limit: "1",
+        market: "from_token",
+      });
+      const searchResult = await spotifyApiFetch(`/search?${searchParams.toString()}`, accessToken);
+      const track = searchResult?.tracks?.items?.[0];
+
+      if (!track?.uri) {
+        throw new Error(`Je n'ai pas trouvé de morceau Spotify pour "${searchQuery}".`);
+      }
+
+      const deviceId = await ensureSpotifyDevice(accessToken);
+
+      await spotifyApiFetch("/me/player", accessToken, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          device_ids: [deviceId],
+          play: false,
+        }),
+      });
+
+      await spotifyApiFetch(`/me/player/play?device_id=${encodeURIComponent(deviceId)}`, accessToken, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          uris: [track.uri],
+        }),
+      });
+
+      const artists = (track.artists || []).map((artist) => artist.name).join(", ");
+      const confirmationMessage = `Lecture lancée : ${track.name}${artists ? ` de ${artists}` : ""}.`;
+
+      setSpotifyNowPlaying({
+        title: track.name,
+        artists,
+        album: track.album?.name || "",
+      });
+      setSpotifyStatusMessage(confirmationMessage);
+      setToolNotice(confirmationMessage);
+
+      return confirmationMessage;
+    } finally {
+      setIsSpotifyBusy(false);
+    }
+  }
+
+  async function pauseSpotifyPlayback() {
+    setIsSpotifyBusy(true);
+    setSpotifyError("");
+
+    try {
+      const accessToken = await ensureFreshSpotifyAccessToken();
+      const deviceId = await ensureSpotifyDevice(accessToken);
+
+      await spotifyApiFetch(`/me/player/pause?device_id=${encodeURIComponent(deviceId)}`, accessToken, {
+        method: "PUT",
+      });
+
+      const confirmationMessage = "Lecture Spotify mise en pause.";
+      setSpotifyStatusMessage(confirmationMessage);
+      setToolNotice(confirmationMessage);
+      return confirmationMessage;
+    } finally {
+      setIsSpotifyBusy(false);
+    }
+  }
+
   const calendarToolHandlers = {
     createCalendarEvent: handleCreateCalendarEvent,
     create_calendar_event: handleCreateCalendarEvent,
@@ -48,10 +225,20 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
     ajouter_rendez_vous: handleCreateCalendarEvent,
     ajouterRendezvous: handleCreateCalendarEvent,
     ajouter_rendezvous: handleCreateCalendarEvent,
+    playSpotifySong: playSpotifySong,
+    play_spotify_song: playSpotifySong,
+    playSongOnSpotify: playSpotifySong,
+    play_song_on_spotify: playSpotifySong,
+    playMusicOnSpotify: playSpotifySong,
+    play_music_on_spotify: playSpotifySong,
+    jouerMusiqueSpotify: playSpotifySong,
+    jouer_musique_spotify: playSpotifySong,
+    pauseSpotify: pauseSpotifyPlayback,
+    pause_spotify: pauseSpotifyPlayback,
   };
 
   async function handleCreateCalendarEvent(parameters) {
-    const normalizedEvent = normalizeCalendarToolParameters(parameters);
+    const normalizedEvent = normalizeCalendarToolParameters(parameters, sessionTimeZone);
     const createdEvent = await createCalendarEvent(normalizedEvent);
     const confirmationMessage = `Rendez-vous ajouté : ${createdEvent.title} le ${formatEventDate(
       createdEvent.startAt
@@ -63,6 +250,193 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
 
     return confirmationMessage;
   }
+
+  async function connectSpotify() {
+    setSpotifyError("");
+    setSpotifyStatusMessage("");
+    beginSpotifyAuthorization();
+  }
+
+  function disconnectSpotify() {
+    spotifyPlayerRef.current?.disconnect?.();
+    spotifyPlayerRef.current = null;
+    setSpotifyAccount(null);
+    setSpotifyDeviceId("");
+    setSpotifyNowPlaying(null);
+    setSpotifyStatusMessage("");
+    setSpotifyError("");
+    setIsSpotifyReady(false);
+    applySpotifySession(null);
+  }
+
+  useEffect(() => {
+    const existingSession = loadSpotifySession();
+    if (existingSession) {
+      setSpotifySession(existingSession);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const url = new URL(window.location.href);
+    const code = url.searchParams.get("code");
+    const state = url.searchParams.get("state");
+    const error = url.searchParams.get("error");
+
+    if (!code && !error) {
+      return;
+    }
+
+    window.history.replaceState({}, document.title, `${url.origin}${url.pathname}`);
+
+    if (error) {
+      setSpotifyError("La connexion Spotify a été refusée.");
+      return;
+    }
+
+    let isMounted = true;
+
+    async function finalizeSpotifyLogin() {
+      setIsSpotifyBusy(true);
+      setSpotifyError("");
+
+      try {
+        const session = await exchangeSpotifyCodeForTokens({ code, state });
+        if (!isMounted) {
+          return;
+        }
+
+        applySpotifySession(session);
+        await loadSpotifyAccount(session.accessToken);
+        if (isMounted) {
+          setSpotifyStatusMessage("Spotify est connecté. Papote peut maintenant lancer la lecture.");
+        }
+      } catch (loginError) {
+        if (isMounted) {
+          setSpotifyError(describeError(loginError));
+        }
+      } finally {
+        if (isMounted) {
+          setIsSpotifyBusy(false);
+        }
+      }
+    }
+
+    void finalizeSpotifyLogin();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!spotifySession?.accessToken) {
+      return;
+    }
+
+    let isMounted = true;
+
+    async function hydrateSpotifyAccount() {
+      try {
+        const accessToken = await ensureFreshSpotifyAccessToken();
+        await loadSpotifyAccount(accessToken);
+      } catch (accountError) {
+        if (isMounted) {
+          setSpotifyError(describeError(accountError));
+        }
+      }
+    }
+
+    void hydrateSpotifyAccount();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [spotifySession?.accessToken]);
+
+  useEffect(() => {
+    if (!spotifySession?.accessToken || typeof window === "undefined") {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function initializeSpotifyPlayer() {
+      if (spotifyPlayerRef.current) {
+        return;
+      }
+
+      try {
+        const SpotifySdk = await loadSpotifySdk(spotifySdkPromiseRef);
+        if (cancelled || !SpotifySdk) {
+          return;
+        }
+
+        const player = new SpotifySdk.Player({
+          name: "Papote",
+          volume: 0.9,
+          getOAuthToken: (callback) => {
+            void ensureFreshSpotifyAccessToken()
+              .then((token) => callback(token))
+              .catch((playerError) => {
+                setSpotifyError(describeError(playerError));
+              });
+          },
+        });
+
+        player.addListener("ready", ({ device_id: deviceId }) => {
+          setSpotifyDeviceId(deviceId);
+          setIsSpotifyReady(true);
+          setSpotifyStatusMessage((current) => current || "Le lecteur Spotify de Papote est prêt.");
+        });
+
+        player.addListener("not_ready", () => {
+          setIsSpotifyReady(false);
+        });
+
+        player.addListener("player_state_changed", (state) => {
+          const currentTrack = state?.track_window?.current_track;
+          if (!currentTrack) {
+            return;
+          }
+
+          setSpotifyNowPlaying({
+            title: currentTrack.name,
+            artists: (currentTrack.artists || []).map((artist) => artist.name).join(", "),
+            album: currentTrack.album?.name || "",
+          });
+        });
+
+        player.addListener("authentication_error", ({ message }) => {
+          setSpotifyError(message || "Spotify a refusé l'authentification du lecteur.");
+        });
+
+        player.addListener("account_error", ({ message }) => {
+          setSpotifyError(message || "Spotify Premium est requis pour la lecture.");
+        });
+
+        player.addListener("playback_error", ({ message }) => {
+          setSpotifyError(message || "La lecture Spotify a échoué.");
+        });
+
+        await player.connect();
+        spotifyPlayerRef.current = player;
+      } catch (playerError) {
+        if (!cancelled) {
+          setSpotifyError(describeError(playerError));
+        }
+      }
+    }
+
+    void initializeSpotifyPlayer();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [spotifySession?.accessToken]);
 
   const conversation = useConversation({
     clientTools: calendarToolHandlers,
@@ -93,6 +467,10 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
 
       if (looksLikeCalendarTool(toolName)) {
         return await handleCreateCalendarEvent(parameters);
+      }
+
+      if (looksLikeSpotifyTool(toolName)) {
+        return await playSpotifySong(parameters);
       }
 
       setRequestError(`Outil client ElevenLabs introuvable : ${toolName || "nom inconnu"}.`);
@@ -132,6 +510,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
     () => mergeEvents(localCreatedEvents, upcomingEvents),
     [localCreatedEvents, upcomingEvents]
   );
+  const spotifyConnected = Boolean(spotifySession?.accessToken && spotifyAccount);
   const remainingSeconds = profile.creditsPerSecond
     ? Math.max(0, Math.floor(profile.creditsRemaining / profile.creditsPerSecond))
     : 0;
@@ -178,6 +557,15 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
     try {
       await navigator.mediaDevices.getUserMedia({ audio: true });
       const dateContext = await buildConversationDateContext(profile);
+      setSessionTimeZone(dateContext.timeZone || "UTC");
+
+      if (spotifyConnected && spotifyPlayerRef.current?.activateElement) {
+        try {
+          await spotifyPlayerRef.current.activateElement();
+        } catch {
+          // Best effort only. The browser may still allow playback on another active device.
+        }
+      }
 
       const response = await fetch("/api/signed-url", {
         method: "POST",
@@ -202,7 +590,12 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
           profile,
           recentConversations,
           mergedUpcomingEvents,
-          dateContext
+          dateContext,
+          {
+            connected: spotifyConnected,
+            ready: isSpotifyReady,
+            nowPlaying: spotifyNowPlaying,
+          }
         ),
         workletPaths: {
           rawAudioProcessor: "/elevenlabs/rawAudioProcessor.worklet.js",
@@ -215,7 +608,11 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
       setLocalCreatedEvents([]);
 
       conversation.sendContextualUpdate(
-        buildProfileContext(profile, recentConversations, mergedUpcomingEvents, dateContext)
+        buildProfileContext(profile, recentConversations, mergedUpcomingEvents, dateContext, {
+          connected: spotifyConnected,
+          ready: isSpotifyReady,
+          nowPlaying: spotifyNowPlaying,
+        })
       );
     } catch (error) {
       if (startedConversationId) {
@@ -244,8 +641,8 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
   return (
     <main className="relative h-[100svh] overflow-hidden bg-[radial-gradient(circle_at_top_left,rgba(184,126,177,0.18),transparent_28%),radial-gradient(circle_at_82%_18%,rgba(0,127,112,0.16),transparent_24%),linear-gradient(180deg,#fffefd_0%,#f4fbf9_48%,#f7eef7_100%)] text-[#0d3d38]">
       <div className="mx-auto grid h-full w-full max-w-7xl gap-6 px-6 py-4 sm:px-8 sm:py-6 lg:grid-cols-[320px_minmax(0,1fr)] lg:px-10 xl:grid-cols-[320px_minmax(0,1fr)_380px]">
-        <aside className="hidden h-full min-h-0 lg:flex lg:flex-col">
-          <Card className="flex h-full min-h-0 flex-col border border-white/80 bg-white/76 shadow-[0_24px_80px_rgba(0,127,112,0.08)] backdrop-blur-xl">
+        <aside className="hidden h-full min-h-0 lg:flex lg:flex-col lg:gap-6">
+          <Card className="flex min-h-0 flex-1 flex-col border border-white/80 bg-white/76 shadow-[0_24px_80px_rgba(0,127,112,0.08)] backdrop-blur-xl">
             <CardHeader className="border-b border-[#007f70]/10">
               <CardTitle className="flex items-center gap-2 text-xl">
                 <CalendarDays className="size-5 text-[#007f70]" />
@@ -284,6 +681,82 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
                     </article>
                   ))
                 )}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border border-white/80 bg-white/76 shadow-[0_24px_80px_rgba(0,127,112,0.08)] backdrop-blur-xl">
+            <CardHeader className="border-b border-[#007f70]/10">
+              <CardTitle className="flex items-center gap-2 text-xl">
+                <Music4 className="size-5 text-[#1db954]" />
+                Spotify
+              </CardTitle>
+              <CardDescription>
+                Connectez votre compte Spotify pour que Papote puisse lancer la lecture.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4 p-4">
+              <div className="rounded-3xl border border-[#1db954]/12 bg-[#f3fbf6] px-4 py-4 text-left">
+                <p className="text-xs uppercase tracking-[0.22em] text-[#6f8d83]">
+                  {spotifyConnected ? "Connecté" : "Non connecté"}
+                </p>
+                <p className="mt-2 text-sm font-semibold text-[#173f3a]">
+                  {spotifyConnected
+                    ? spotifyAccount?.displayName || "Compte Spotify connecté"
+                    : "Autorisez Spotify une fois, puis Papote pourra jouer vos morceaux."}
+                </p>
+                <p className="mt-2 text-sm leading-6 text-[#5f7b76]">
+                  {spotifyNowPlaying
+                    ? `En cours : ${spotifyNowPlaying.title}${
+                        spotifyNowPlaying.artists ? `, ${spotifyNowPlaying.artists}` : ""
+                      }.`
+                    : spotifyStatusMessage ||
+                      "Une fois connecté, cliquez sur Discuter puis demandez à Papote de lancer une chanson."}
+                </p>
+              </div>
+
+              {spotifyError ? (
+                <div className="rounded-2xl border border-red-300/40 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {spotifyError}
+                </div>
+              ) : null}
+
+              <div className="flex flex-wrap gap-3">
+                <Button
+                  type="button"
+                  onClick={spotifyConnected ? disconnectSpotify : connectSpotify}
+                  disabled={isSpotifyBusy}
+                  className="rounded-full"
+                >
+                  <Music4 className="size-4" />
+                  {spotifyConnected ? "Déconnecter Spotify" : "Connecter Spotify"}
+                </Button>
+
+                {spotifyConnected ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() =>
+                      void pauseSpotifyPlayback().catch((error) =>
+                        setSpotifyError(describeError(error))
+                      )
+                    }
+                    disabled={isSpotifyBusy}
+                    className="rounded-full"
+                  >
+                    <PauseCircle className="size-4" />
+                    Pause
+                  </Button>
+                ) : null}
+              </div>
+
+              <div className="flex items-start gap-3 rounded-3xl border border-[#007f70]/10 bg-white/70 px-4 py-3 text-left">
+                <CheckCircle2 className="mt-0.5 size-4 text-[#007f70]" />
+                <p className="text-xs leading-5 text-[#64807b]">
+                  {isSpotifyReady
+                    ? "Le lecteur Spotify de Papote est prêt. Un clic sur Discuter active aussi le lecteur dans le navigateur."
+                    : "Après la connexion Spotify, laissez cette page ouverte. Le lecteur se prépare automatiquement."}
+                </p>
               </div>
             </CardContent>
           </Card>
@@ -348,6 +821,16 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
             >
               <Mic className="size-4" />
               {status === "connected" ? "Terminer" : "Discuter"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={spotifyConnected ? disconnectSpotify : connectSpotify}
+              disabled={isSpotifyBusy}
+              className="rounded-full lg:hidden"
+            >
+              <Music4 className="size-4" />
+              {spotifyConnected ? "Spotify connecté" : "Connecter Spotify"}
             </Button>
           </div>
 
@@ -528,27 +1011,23 @@ function safeSerialize(value) {
 
 function describeDisconnect(details) {
   if (!details || typeof details !== "object") {
-    return "La session a été fermée.";
+    return "";
   }
 
-  const parts = [];
-
-  if (typeof details.reason === "string" && details.reason.trim()) {
-    parts.push(`Raison: ${details.reason}`);
+  if (typeof details.wasClean === "boolean" && !details.wasClean) {
+    return "La session s'est interrompue de façon inattendue.";
   }
 
-  if (typeof details.code !== "undefined") {
-    parts.push(`Code: ${details.code}`);
-  }
-
-  if (typeof details.wasClean === "boolean") {
-    parts.push(details.wasClean ? "Fermeture propre." : "Fermeture inattendue.");
-  }
-
-  return parts.length > 0 ? parts.join(" ") : safeSerialize(details);
+  return "";
 }
 
-function buildDynamicVariables(profile, recentConversations, upcomingEvents, dateContext) {
+function buildDynamicVariables(
+  profile,
+  recentConversations,
+  upcomingEvents,
+  dateContext,
+  spotifyContext = {}
+) {
   return {
     userName: profile.firstName,
     user_first_name: profile.firstName,
@@ -562,12 +1041,25 @@ function buildDynamicVariables(profile, recentConversations, upcomingEvents, dat
     date_iso: dateContext.iso,
     current_time_zone: dateContext.timeZone,
     current_location_label: dateContext.locationLabel,
+    spotify_connected: spotifyContext.connected ? "true" : "false",
+    spotify_ready: spotifyContext.ready ? "true" : "false",
+    spotify_now_playing: spotifyContext.nowPlaying
+      ? `${spotifyContext.nowPlaying.title}${
+          spotifyContext.nowPlaying.artists ? ` - ${spotifyContext.nowPlaying.artists}` : ""
+        }`
+      : "",
     previous_conversations_summary: buildConversationSummary(recentConversations),
     upcoming_events_summary: buildUpcomingEventsSummary(upcomingEvents),
   };
 }
 
-function buildProfileContext(profile, recentConversations, upcomingEvents, dateContext) {
+function buildProfileContext(
+  profile,
+  recentConversations,
+  upcomingEvents,
+  dateContext,
+  spotifyContext = {}
+) {
   return [
     "Contexte utilisateur pour cette conversation :",
     `Date et heure actuelles : ${dateContext.promptValue}`,
@@ -584,6 +1076,12 @@ function buildProfileContext(profile, recentConversations, upcomingEvents, dateC
       : "Historique récent : aucune conversation précédente enregistrée.",
     `Évènements à venir : ${buildUpcomingEventsSummary(upcomingEvents)}`,
     "Si l'utilisateur demande d'ajouter un rendez-vous ou un évènement à son calendrier, utilise l'outil client createCalendarEvent avec un titre et une date de début précise.",
+    spotifyContext.connected
+      ? `Spotify est connecté${spotifyContext.ready ? " et le lecteur est prêt." : "."}`
+      : "Spotify n'est pas encore connecté.",
+    spotifyContext.connected
+      ? "Si l'utilisateur demande de jouer une chanson, utilise l'outil client playSpotifySong avec le titre du morceau et éventuellement l'artiste."
+      : "Si l'utilisateur demande de jouer une chanson et que Spotify n'est pas connecté, invite-le à cliquer sur le bouton Connecter Spotify.",
     "Utilise ce contexte pour personnaliser tes réponses dès le début de l'appel.",
   ]
     .filter(Boolean)
@@ -737,7 +1235,7 @@ function sanitizeVisibleText(text) {
   return cleanedText || "Message sans contenu visible.";
 }
 
-function normalizeCalendarToolParameters(parameters) {
+function normalizeCalendarToolParameters(parameters, timeZone) {
   const normalizedParameters = normalizeToolParameters(parameters);
   const title = firstNonEmptyString(
     normalizedParameters?.title,
@@ -779,8 +1277,8 @@ function normalizeCalendarToolParameters(parameters) {
 
   return {
     title,
-    startAt: normalizeToolDateValue(startAt),
-    endAt: endAt ? normalizeToolDateValue(endAt) : undefined,
+    startAt: normalizeToolDateValue(startAt, timeZone),
+    endAt: endAt ? normalizeToolDateValue(endAt, timeZone) : undefined,
   };
 }
 
@@ -802,7 +1300,7 @@ function buildDateTimeFromParts(parameters) {
   }
 
   const rawValue = time ? `${date}T${time}` : `${date}T12:00:00`;
-  return normalizeToolDateValue(rawValue);
+  return rawValue;
 }
 
 function buildEndDateTimeFromParts(parameters) {
@@ -830,7 +1328,7 @@ function firstNonEmptyString(...values) {
   return "";
 }
 
-function normalizeToolDateValue(value) {
+function normalizeToolDateValue(value, timeZone = "UTC") {
   if (typeof value === "number" && Number.isFinite(value)) {
     const timestamp = value > 1e12 ? value : value * 1000;
     return new Date(timestamp).toISOString();
@@ -849,52 +1347,108 @@ function normalizeToolDateValue(value) {
     return new Date(timestamp).toISOString();
   }
 
-  const slashDateMatch = normalizedFrenchDate.match(
+  const zonedDateTime = parseCalendarDateParts(normalizedFrenchDate);
+  if (zonedDateTime) {
+    return zonedDateTimeToIso(zonedDateTime, timeZone);
+  }
+
+  return trimmedValue;
+}
+
+function parseCalendarDateParts(value) {
+  const yearFirstDateTimeMatch = value.match(
+    /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?$/
+  );
+
+  if (yearFirstDateTimeMatch) {
+    const [, year, month, day, hour = "12", minute = "00", second = "00"] =
+      yearFirstDateTimeMatch;
+    return {
+      year: Number(year),
+      month: Number(month),
+      day: Number(day),
+      hour: Number(hour),
+      minute: Number(minute),
+      second: Number(second),
+    };
+  }
+
+  const slashDateMatch = value.match(
     /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/
   );
 
   if (slashDateMatch) {
     const [, day, month, year, hour = "12", minute = "00", second = "00"] = slashDateMatch;
-    return new Date(
-      Number(year),
-      Number(month) - 1,
-      Number(day),
-      Number(hour),
-      Number(minute),
-      Number(second)
-    ).toISOString();
+    return {
+      year: Number(year),
+      month: Number(month),
+      day: Number(day),
+      hour: Number(hour),
+      minute: Number(minute),
+      second: Number(second),
+    };
   }
 
-  const dayFirstDateMatch = normalizedFrenchDate.match(
+  const dayFirstDateMatch = value.match(
     /^(\d{1,2})-(\d{1,2})-(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/
   );
 
   if (dayFirstDateMatch) {
     const [, day, month, year, hour = "12", minute = "00", second = "00"] =
       dayFirstDateMatch;
-    return new Date(
-      Number(year),
-      Number(month) - 1,
-      Number(day),
-      Number(hour),
-      Number(minute),
-      Number(second)
-    ).toISOString();
+    return {
+      year: Number(year),
+      month: Number(month),
+      day: Number(day),
+      hour: Number(hour),
+      minute: Number(minute),
+      second: Number(second),
+    };
   }
 
-  const parsedDate = new Date(trimmedValue);
+  return null;
+}
 
-  if (!Number.isNaN(parsedDate.getTime())) {
-    return parsedDate.toISOString();
-  }
+function zonedDateTimeToIso(parts, timeZone) {
+  const utcGuess = Date.UTC(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    parts.hour,
+    parts.minute,
+    parts.second
+  );
+  const offset = getTimeZoneOffsetMilliseconds(new Date(utcGuess), timeZone);
+  return new Date(utcGuess - offset).toISOString();
+}
 
-  const normalizedParsedDate = new Date(normalizedFrenchDate);
+function getTimeZoneOffsetMilliseconds(date, timeZone) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+  const values = Object.fromEntries(
+    formatter
+      .formatToParts(date)
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value])
+  );
+  const asUtc = Date.UTC(
+    Number(values.year),
+    Number(values.month) - 1,
+    Number(values.day),
+    Number(values.hour),
+    Number(values.minute),
+    Number(values.second)
+  );
 
-  if (!Number.isNaN(normalizedParsedDate.getTime())) {
-    return normalizedParsedDate.toISOString();
-  }
-
-  return trimmedValue;
+  return asUtc - date.getTime();
 }
 
 function mergeEvents(localEvents, remoteEvents) {
@@ -942,6 +1496,44 @@ function looksLikeCalendarTool(toolName) {
     normalized.includes("agenda") ||
     normalized.includes("rdv")
   );
+}
+
+function looksLikeSpotifyTool(toolName) {
+  const normalized = normalizeToolIdentifier(toolName);
+
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    normalized.includes("spotify") ||
+    normalized.includes("playsong") ||
+    normalized.includes("playmusic") ||
+    normalized.includes("jouermusique")
+  );
+}
+
+function buildSpotifySearchQuery(parameters) {
+  const normalizedParameters = normalizeToolParameters(parameters);
+  const title = firstNonEmptyString(
+    normalizedParameters?.query,
+    normalizedParameters?.track,
+    normalizedParameters?.song,
+    normalizedParameters?.title,
+    normalizedParameters?.music,
+    normalizedParameters?.prompt
+  );
+  const artist = firstNonEmptyString(
+    normalizedParameters?.artist,
+    normalizedParameters?.artistName,
+    normalizedParameters?.singer
+  );
+
+  if (!title) {
+    return artist;
+  }
+
+  return artist ? `${title} ${artist}` : title;
 }
 
 function normalizeToolIdentifier(value) {
