@@ -488,7 +488,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
   }, [spotifySession?.accessToken]);
 
   useEffect(() => {
-    if (!spotifyPlayerRef.current || !spotifyConnected) {
+    if (!spotifyPlayerRef.current || !spotifySession?.accessToken || !spotifyAccount) {
       return;
     }
 
@@ -512,7 +512,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
     return () => {
       clearInterval(intervalId);
     };
-  }, [spotifyConnected, isSpotifyReady]);
+  }, [spotifySession?.accessToken, spotifyAccount, isSpotifyReady]);
 
   const conversation = useConversation({
     clientTools: calendarToolHandlers,
