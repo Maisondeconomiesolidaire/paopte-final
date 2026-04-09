@@ -6,6 +6,7 @@ import {
   AudioLines,
   CalendarDays,
   CheckCircle2,
+  ChevronDown,
   Clock3,
   MessageSquare,
   Mic,
@@ -45,7 +46,6 @@ const formatter = new Intl.DateTimeFormat("fr-FR", {
 export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] }) {
   const [messages, setMessages] = useState([]);
   const [requestError, setRequestError] = useState("");
-  const [disconnectReason, setDisconnectReason] = useState("");
   const [toolNotice, setToolNotice] = useState("");
   const [localCreatedEvents, setLocalCreatedEvents] = useState([]);
   const [isConnecting, setIsConnecting] = useState(false);
@@ -58,11 +58,16 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
   const [spotifyError, setSpotifyError] = useState("");
   const [spotifyNowPlaying, setSpotifyNowPlaying] = useState(null);
   const [spotifyDeviceId, setSpotifyDeviceId] = useState("");
+  const [spotifyPlaybackPositionMs, setSpotifyPlaybackPositionMs] = useState(0);
+  const [spotifyPlaybackDurationMs, setSpotifyPlaybackDurationMs] = useState(0);
+  const [isSpotifyPlaying, setIsSpotifyPlaying] = useState(false);
   const [isSpotifyBusy, setIsSpotifyBusy] = useState(false);
   const [isSpotifyReady, setIsSpotifyReady] = useState(false);
+  const [activeSidebarPanel, setActiveSidebarPanel] = useState(null);
   const activeConversationRef = useRef(null);
   const spotifyPlayerRef = useRef(null);
   const spotifySdkPromiseRef = useRef(null);
+  const transcriptContainerRef = useRef(null);
   const createConversation = useMutation(api.conversations.start);
   const appendConversationMessage = useMutation(api.conversations.appendMessage);
   const finishConversation = useMutation(api.conversations.end);
@@ -179,7 +184,12 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
         title: track.name,
         artists,
         album: track.album?.name || "",
+        coverUrl: track.album?.images?.[0]?.url || "",
       });
+      setActiveSidebarPanel("music");
+      setSpotifyPlaybackDurationMs(track.duration_ms || 0);
+      setSpotifyPlaybackPositionMs(0);
+      setIsSpotifyPlaying(true);
       setSpotifyStatusMessage(confirmationMessage);
       setToolNotice(confirmationMessage);
 
@@ -202,6 +212,31 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
       });
 
       const confirmationMessage = "Lecture Spotify mise en pause.";
+      setActiveSidebarPanel("music");
+      setIsSpotifyPlaying(false);
+      setSpotifyStatusMessage(confirmationMessage);
+      setToolNotice(confirmationMessage);
+      return confirmationMessage;
+    } finally {
+      setIsSpotifyBusy(false);
+    }
+  }
+
+  async function resumeSpotifyPlayback() {
+    setIsSpotifyBusy(true);
+    setSpotifyError("");
+
+    try {
+      const accessToken = await ensureFreshSpotifyAccessToken();
+      const deviceId = await ensureSpotifyDevice(accessToken);
+
+      await spotifyApiFetch(`/me/player/play?device_id=${encodeURIComponent(deviceId)}`, accessToken, {
+        method: "PUT",
+      });
+
+      const confirmationMessage = "Lecture Spotify reprise.";
+      setActiveSidebarPanel("music");
+      setIsSpotifyPlaying(true);
       setSpotifyStatusMessage(confirmationMessage);
       setToolNotice(confirmationMessage);
       return confirmationMessage;
@@ -235,6 +270,14 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
     jouer_musique_spotify: playSpotifySong,
     pauseSpotify: pauseSpotifyPlayback,
     pause_spotify: pauseSpotifyPlayback,
+    pauseMusic: pauseSpotifyPlayback,
+    pause_music: pauseSpotifyPlayback,
+    pausePlayback: pauseSpotifyPlayback,
+    pause_playback: pauseSpotifyPlayback,
+    stopMusic: pauseSpotifyPlayback,
+    stop_music: pauseSpotifyPlayback,
+    resumeSpotify: resumeSpotifyPlayback,
+    resume_spotify: resumeSpotifyPlayback,
   };
 
   async function handleCreateCalendarEvent(parameters) {
@@ -245,6 +288,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
     )}.`;
 
     setLocalCreatedEvents((current) => mergeEvents(current, [createdEvent]));
+    setActiveSidebarPanel("agenda");
     setToolNotice(confirmationMessage);
     setRequestError("");
 
@@ -399,6 +443,10 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
 
         player.addListener("player_state_changed", (state) => {
           const currentTrack = state?.track_window?.current_track;
+          setSpotifyPlaybackPositionMs(state?.position || 0);
+          setSpotifyPlaybackDurationMs(state?.duration || 0);
+          setIsSpotifyPlaying(!state?.paused);
+
           if (!currentTrack) {
             return;
           }
@@ -407,6 +455,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
             title: currentTrack.name,
             artists: (currentTrack.artists || []).map((artist) => artist.name).join(", "),
             album: currentTrack.album?.name || "",
+            coverUrl: currentTrack.album?.images?.[0]?.url || "",
           });
         });
 
@@ -438,11 +487,37 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
     };
   }, [spotifySession?.accessToken]);
 
+  useEffect(() => {
+    if (!spotifyPlayerRef.current || !spotifyConnected) {
+      return;
+    }
+
+    const intervalId = setInterval(() => {
+      spotifyPlayerRef.current
+        .getCurrentState()
+        .then((state) => {
+          if (!state) {
+            return;
+          }
+
+          setSpotifyPlaybackPositionMs(state.position || 0);
+          setSpotifyPlaybackDurationMs(state.duration || 0);
+          setIsSpotifyPlaying(!state.paused);
+        })
+        .catch(() => {
+          // Silent polling failure; the next cycle will retry.
+        });
+    }, 1000);
+
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [spotifyConnected, isSpotifyReady]);
+
   const conversation = useConversation({
     clientTools: calendarToolHandlers,
     onConnect: () => {
       setRequestError("");
-      setDisconnectReason("");
       setToolNotice("");
     },
     onDisconnect: (details) => {
@@ -455,7 +530,6 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
       }
 
       setIsConnecting(false);
-      setDisconnectReason(describeDisconnect(details));
     },
     onError: (error) => {
       setIsConnecting(false);
@@ -464,12 +538,21 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
     onUnhandledClientToolCall: async (toolCall) => {
       const toolName = extractToolName(toolCall);
       const parameters = extractToolParameters(toolCall);
+      const normalizedToolName = normalizeToolIdentifier(toolName);
 
       if (looksLikeCalendarTool(toolName)) {
         return await handleCreateCalendarEvent(parameters);
       }
 
       if (looksLikeSpotifyTool(toolName)) {
+        if (normalizedToolName.includes("pause")) {
+          return await pauseSpotifyPlayback();
+        }
+
+        if (normalizedToolName.includes("resume")) {
+          return await resumeSpotifyPlayback();
+        }
+
         return await playSpotifySong(parameters);
       }
 
@@ -480,6 +563,11 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
       const text = sanitizeVisibleText(extractText(message));
       const role = extractRole(message);
       const timestamp = formatter.format(new Date());
+      const sidebarPanel = inferSidebarPanelFromText(text);
+
+      if (role === "user" && sidebarPanel) {
+        setActiveSidebarPanel(sidebarPanel);
+      }
 
       setMessages((current) => [
         ...current,
@@ -532,6 +620,18 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
     }
   }, [status, trialIsExhausted]);
 
+  useEffect(() => {
+    const container = transcriptContainerRef.current;
+    if (!container) {
+      return;
+    }
+
+    container.scrollTo({
+      top: container.scrollHeight,
+      behavior: "smooth",
+    });
+  }, [messages]);
+
   async function startConversation() {
     if (trialIsExhausted) {
       setRequestError(TRIAL_EXHAUSTED_MESSAGE);
@@ -549,7 +649,6 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
 
     setIsConnecting(true);
     setRequestError("");
-    setDisconnectReason("");
     setToolNotice("");
 
     let startedConversationId = "";
@@ -644,15 +743,34 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
         <aside className="hidden h-full min-h-0 lg:flex lg:flex-col lg:gap-6">
           <Card className="flex min-h-0 flex-1 flex-col border border-white/80 bg-white/76 shadow-[0_24px_80px_rgba(0,127,112,0.08)] backdrop-blur-xl">
             <CardHeader className="border-b border-[#007f70]/10">
-              <CardTitle className="flex items-center gap-2 text-xl">
-                <CalendarDays className="size-5 text-[#007f70]" />
-                Agenda
-              </CardTitle>
-              <CardDescription>
-                Les prochains évènements à garder en tête pendant la conversation.
-              </CardDescription>
+              <button
+                type="button"
+                onClick={() =>
+                  setActiveSidebarPanel((current) => (current === "agenda" ? null : "agenda"))
+                }
+                className="flex w-full items-center justify-between gap-4 text-left"
+              >
+                <div>
+                  <CardTitle className="flex items-center gap-2 text-xl">
+                    <CalendarDays className="size-5 text-[#007f70]" />
+                    Agenda
+                  </CardTitle>
+                  <CardDescription className="mt-2">
+                    Les prochains évènements à garder en tête pendant la conversation.
+                  </CardDescription>
+                </div>
+                <ChevronDown
+                  className={`size-5 text-[#64807b] transition-transform ${
+                    activeSidebarPanel === "agenda" ? "rotate-180" : ""
+                  }`}
+                />
+              </button>
             </CardHeader>
-            <CardContent className="flex flex-1 min-h-0 flex-col overflow-hidden p-4">
+            <CardContent
+              className={`overflow-hidden p-4 transition-all ${
+                activeSidebarPanel === "agenda" ? "flex flex-1 min-h-0 flex-col" : "hidden"
+              }`}
+            >
               <div className="grid flex-1 gap-3 overflow-y-auto pr-1">
                 {mergedUpcomingEvents.length === 0 ? (
                   <div className="flex min-h-48 flex-col justify-center rounded-3xl border border-dashed border-[#007f70]/15 bg-[#f5fbfa] px-5 text-center">
@@ -687,15 +805,30 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
 
           <Card className="border border-white/80 bg-white/76 shadow-[0_24px_80px_rgba(0,127,112,0.08)] backdrop-blur-xl">
             <CardHeader className="border-b border-[#007f70]/10">
-              <CardTitle className="flex items-center gap-2 text-xl">
-                <Music4 className="size-5 text-[#1db954]" />
-                Spotify
-              </CardTitle>
-              <CardDescription>
-                Connectez votre compte Spotify pour que Papote puisse lancer la lecture.
-              </CardDescription>
+              <button
+                type="button"
+                onClick={() =>
+                  setActiveSidebarPanel((current) => (current === "music" ? null : "music"))
+                }
+                className="flex w-full items-center justify-between gap-4 text-left"
+              >
+                <div>
+                  <CardTitle className="flex items-center gap-2 text-xl">
+                    <Music4 className="size-5 text-[#1db954]" />
+                    Musique
+                  </CardTitle>
+                  <CardDescription className="mt-2">
+                    Connectez votre compte Spotify pour que Papote puisse lancer la lecture.
+                  </CardDescription>
+                </div>
+                <ChevronDown
+                  className={`size-5 text-[#64807b] transition-transform ${
+                    activeSidebarPanel === "music" ? "rotate-180" : ""
+                  }`}
+                />
+              </button>
             </CardHeader>
-            <CardContent className="space-y-4 p-4">
+            <CardContent className={activeSidebarPanel === "music" ? "space-y-4 p-4" : "hidden"}>
               <div className="rounded-3xl border border-[#1db954]/12 bg-[#f3fbf6] px-4 py-4 text-left">
                 <p className="text-xs uppercase tracking-[0.22em] text-[#6f8d83]">
                   {spotifyConnected ? "Connecté" : "Non connecté"}
@@ -749,6 +882,77 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
                   </Button>
                 ) : null}
               </div>
+
+              {spotifyNowPlaying ? (
+                <div className="rounded-[28px] border border-[#007f70]/10 bg-white/80 p-4 text-left shadow-[0_16px_40px_rgba(0,127,112,0.06)]">
+                  <div className="flex items-center gap-4">
+                    {spotifyNowPlaying.coverUrl ? (
+                      <img
+                        src={spotifyNowPlaying.coverUrl}
+                        alt={`Pochette de ${spotifyNowPlaying.title}`}
+                        className="h-20 w-20 rounded-2xl object-cover shadow-[0_12px_30px_rgba(0,0,0,0.12)]"
+                      />
+                    ) : (
+                      <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-[#eef8f3] text-[#1db954]">
+                        <Music4 className="size-8" />
+                      </div>
+                    )}
+
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-semibold text-[#173f3a]">
+                        {spotifyNowPlaying.title}
+                      </p>
+                      <p className="mt-1 truncate text-sm text-[#5f7b76]">
+                        {spotifyNowPlaying.artists || "Artiste inconnu"}
+                      </p>
+                      <p className="mt-1 truncate text-xs text-[#7a8f8b]">
+                        {spotifyNowPlaying.album || "Album inconnu"}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 space-y-2">
+                    <div className="h-2 overflow-hidden rounded-full bg-[#dceee7]">
+                      <div
+                        className="h-full rounded-full bg-[#1db954] transition-[width] duration-500"
+                        style={{
+                          width: `${
+                            spotifyPlaybackDurationMs > 0
+                              ? Math.min(
+                                  100,
+                                  (spotifyPlaybackPositionMs / spotifyPlaybackDurationMs) * 100
+                                )
+                              : 0
+                          }%`,
+                        }}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between text-xs text-[#72908b]">
+                      <span>{formatPlaybackTime(spotifyPlaybackPositionMs)}</span>
+                      <span>{formatPlaybackTime(spotifyPlaybackDurationMs)}</span>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex items-center gap-3">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() =>
+                        void (isSpotifyPlaying ? pauseSpotifyPlayback() : resumeSpotifyPlayback()).catch(
+                          (error) => setSpotifyError(describeError(error))
+                        )
+                      }
+                      disabled={isSpotifyBusy}
+                      className="rounded-full"
+                    >
+                      {isSpotifyPlaying ? "Pause" : "Lecture"}
+                    </Button>
+                    <p className="text-xs text-[#64807b]">
+                      {isSpotifyPlaying ? "Lecture en cours" : "Lecture en pause"}
+                    </p>
+                  </div>
+                </div>
+              ) : null}
 
               <div className="flex items-start gap-3 rounded-3xl border border-[#007f70]/10 bg-white/70 px-4 py-3 text-left">
                 <CheckCircle2 className="mt-0.5 size-4 text-[#007f70]" />
@@ -830,7 +1034,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
               className="rounded-full lg:hidden"
             >
               <Music4 className="size-4" />
-              {spotifyConnected ? "Spotify connecté" : "Connecter Spotify"}
+              {spotifyConnected ? "Musique connectée" : "Connecter Musique"}
             </Button>
           </div>
 
@@ -846,11 +1050,6 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
             </div>
           ) : null}
 
-          {!requestError && disconnectReason ? (
-            <div className="mt-4 max-w-xl rounded-2xl border border-[#b87eb1]/25 bg-white/80 px-4 py-3 text-sm text-[#6d4e69] shadow-[0_12px_30px_rgba(184,126,177,0.08)]">
-              {disconnectReason}
-            </div>
-          ) : null}
         </section>
 
         <aside className="hidden h-full min-h-0 xl:flex xl:flex-col">
@@ -865,7 +1064,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
               </CardDescription>
             </CardHeader>
             <CardContent className="flex flex-1 min-h-0 flex-col gap-4 overflow-hidden p-4">
-              <div className="grid flex-1 gap-3 overflow-y-auto pr-1">
+              <div ref={transcriptContainerRef} className="grid flex-1 gap-3 overflow-y-auto pr-1">
                 {messages.length === 0 ? (
                   <div className="flex min-h-48 flex-col items-center justify-center rounded-3xl border border-dashed border-[#007f70]/15 bg-[#f5fbfa] px-5 text-center">
                     <MessageSquare className="size-7 text-[#84a7a1]" />
@@ -1082,6 +1281,9 @@ function buildProfileContext(
     spotifyContext.connected
       ? "Si l'utilisateur demande de jouer une chanson, utilise l'outil client playSpotifySong avec le titre du morceau et éventuellement l'artiste."
       : "Si l'utilisateur demande de jouer une chanson et que Spotify n'est pas connecté, invite-le à cliquer sur le bouton Connecter Spotify.",
+    spotifyContext.connected
+      ? "Si l'utilisateur demande pause, stop ou de mettre la musique en pause, utilise l'outil client pauseSpotify."
+      : null,
     "Utilise ce contexte pour personnaliser tes réponses dès le début de l'appel.",
   ]
     .filter(Boolean)
@@ -1157,6 +1359,18 @@ function formatDuration(totalSeconds) {
   }
 
   return `${seconds} s`;
+}
+
+function formatPlaybackTime(totalMilliseconds) {
+  if (!Number.isFinite(totalMilliseconds) || totalMilliseconds <= 0) {
+    return "0:00";
+  }
+
+  const totalSeconds = Math.floor(totalMilliseconds / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
 async function buildConversationDateContext(profile) {
@@ -1509,8 +1723,42 @@ function looksLikeSpotifyTool(toolName) {
     normalized.includes("spotify") ||
     normalized.includes("playsong") ||
     normalized.includes("playmusic") ||
-    normalized.includes("jouermusique")
+    normalized.includes("jouermusique") ||
+    normalized.includes("pausemusic") ||
+    normalized.includes("pauseplayback") ||
+    normalized.includes("stopmusic")
   );
+}
+
+function inferSidebarPanelFromText(text) {
+  const normalized = normalizeToolIdentifier(text);
+
+  if (!normalized) {
+    return null;
+  }
+
+  if (
+    normalized.includes("agenda") ||
+    normalized.includes("calendrier") ||
+    normalized.includes("rendezvous") ||
+    normalized.includes("evenement") ||
+    normalized.includes("rdv")
+  ) {
+    return "agenda";
+  }
+
+  if (
+    normalized.includes("musique") ||
+    normalized.includes("spotify") ||
+    normalized.includes("chanson") ||
+    normalized.includes("morceau") ||
+    normalized.includes("album") ||
+    normalized.includes("playlist")
+  ) {
+    return "music";
+  }
+
+  return null;
 }
 
 function buildSpotifySearchQuery(parameters) {
