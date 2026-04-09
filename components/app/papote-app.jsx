@@ -53,8 +53,14 @@ function PapoteAuthenticated() {
   const profile = useQuery(api.profiles.current);
   const recentConversations = useQuery(api.conversations.recentForCurrent);
   const upcomingEvents = useQuery(api.events.upcomingForCurrent, { limit: 8 });
+  const recentNotes = useQuery(api.notes.recentForCurrent, { limit: 8 });
 
-  if (profile === undefined || recentConversations === undefined || upcomingEvents === undefined) {
+  if (
+    profile === undefined ||
+    recentConversations === undefined ||
+    upcomingEvents === undefined ||
+    recentNotes === undefined
+  ) {
     return <CenteredState title="Connexion en cours" description="Connexion en cours..." />;
   }
 
@@ -67,6 +73,7 @@ function PapoteAuthenticated() {
       profile={profile}
       recentConversations={recentConversations}
       upcomingEvents={upcomingEvents}
+      recentNotes={recentNotes}
     />
   );
 }

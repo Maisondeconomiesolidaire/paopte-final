@@ -11,6 +11,7 @@
 import type * as conversations from "../conversations.js";
 import type * as credits from "../credits.js";
 import type * as events from "../events.js";
+import type * as notes from "../notes.js";
 import type * as profiles from "../profiles.js";
 
 import type {
@@ -23,6 +24,7 @@ declare const fullApi: ApiFromModules<{
   conversations: typeof conversations;
   credits: typeof credits;
   events: typeof events;
+  notes: typeof notes;
   profiles: typeof profiles;
 }>;
 

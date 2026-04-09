@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Clock3,
+  FileText,
   MessageSquare,
   Mic,
   Music4,
@@ -37,17 +38,27 @@ import {
 
 const AGENT_ID = process.env.NEXT_PUBLIC_ELEVENLABS_AGENT_ID || "";
 const TRIAL_EXHAUSTED_MESSAGE = "Vous avez utilisé tous vos crédits, merci pour votre essai.";
+const SPOTIFY_NORMAL_VOLUME = 0.9;
+const SPOTIFY_DUCKED_VOLUME = 0.18;
+const USER_VAD_ACTIVE_THRESHOLD = 0.55;
+const USER_VAD_RELEASE_DELAY_MS = 900;
 
 const formatter = new Intl.DateTimeFormat("fr-FR", {
   hour: "2-digit",
   minute: "2-digit",
 });
 
-export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] }) {
+export function VoiceStudio({
+  profile,
+  recentConversations,
+  upcomingEvents = [],
+  recentNotes = [],
+}) {
   const [messages, setMessages] = useState([]);
   const [requestError, setRequestError] = useState("");
   const [toolNotice, setToolNotice] = useState("");
   const [localCreatedEvents, setLocalCreatedEvents] = useState([]);
+  const [localCreatedNotes, setLocalCreatedNotes] = useState([]);
   const [isConnecting, setIsConnecting] = useState(false);
   const [sessionTimeZone, setSessionTimeZone] = useState(
     Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"
@@ -63,15 +74,18 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
   const [isSpotifyPlaying, setIsSpotifyPlaying] = useState(false);
   const [isSpotifyBusy, setIsSpotifyBusy] = useState(false);
   const [isSpotifyReady, setIsSpotifyReady] = useState(false);
+  const [isUserSpeaking, setIsUserSpeaking] = useState(false);
   const [activeSidebarPanel, setActiveSidebarPanel] = useState(null);
   const activeConversationRef = useRef(null);
   const spotifyPlayerRef = useRef(null);
   const spotifySdkPromiseRef = useRef(null);
   const transcriptContainerRef = useRef(null);
+  const userSpeechReleaseTimeoutRef = useRef(null);
   const createConversation = useMutation(api.conversations.start);
   const appendConversationMessage = useMutation(api.conversations.appendMessage);
   const finishConversation = useMutation(api.conversations.end);
   const createCalendarEvent = useMutation(api.events.createForCurrent);
+  const createNote = useMutation(api.notes.createForCurrent);
 
   function applySpotifySession(nextSession) {
     setSpotifySession(nextSession);
@@ -112,7 +126,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
 
   async function ensureSpotifyDevice(accessToken) {
     if (spotifyDeviceId) {
-      return spotifyDeviceId;
+      return { id: spotifyDeviceId, isActive: true };
     }
 
     const devicesResponse = await spotifyApiFetch("/me/player/devices", accessToken);
@@ -127,7 +141,88 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
     }
 
     setSpotifyDeviceId(device.id);
-    return device.id;
+    return {
+      id: device.id,
+      isActive: Boolean(device.is_active),
+    };
+  }
+
+  async function setSpotifyPlaybackVolume(targetVolume) {
+    if (!spotifyPlayerRef.current?.setVolume) {
+      return;
+    }
+
+    try {
+      await spotifyPlayerRef.current.setVolume(targetVolume);
+    } catch {
+      // Ignore volume sync failures; next voice state change will retry.
+    }
+  }
+
+  async function startSpotifyTrackPlayback(accessToken, device, trackUri) {
+    if (!device?.isActive) {
+      await spotifyApiFetch("/me/player", accessToken, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          device_ids: [device.id],
+          play: false,
+        }),
+      });
+    }
+
+    try {
+      await spotifyApiFetch(`/me/player/play?device_id=${encodeURIComponent(device.id)}`, accessToken, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          uris: [trackUri],
+        }),
+      });
+    } catch (error) {
+      await wait(350);
+
+      await spotifyApiFetch(`/me/player/play?device_id=${encodeURIComponent(device.id)}`, accessToken, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          uris: [trackUri],
+        }),
+      });
+
+      if (error) {
+        return;
+      }
+    }
+  }
+
+  function handleVadScore(score) {
+    if (typeof score !== "number") {
+      return;
+    }
+
+    if (score >= USER_VAD_ACTIVE_THRESHOLD) {
+      if (userSpeechReleaseTimeoutRef.current) {
+        clearTimeout(userSpeechReleaseTimeoutRef.current);
+      }
+
+      setIsUserSpeaking(true);
+      return;
+    }
+
+    if (userSpeechReleaseTimeoutRef.current) {
+      clearTimeout(userSpeechReleaseTimeoutRef.current);
+    }
+
+    userSpeechReleaseTimeoutRef.current = setTimeout(() => {
+      setIsUserSpeaking(false);
+    }, USER_VAD_RELEASE_DELAY_MS);
   }
 
   async function playSpotifySong(parameters) {
@@ -147,35 +242,17 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
         limit: "1",
         market: "from_token",
       });
-      const searchResult = await spotifyApiFetch(`/search?${searchParams.toString()}`, accessToken);
+      const [searchResult, device] = await Promise.all([
+        spotifyApiFetch(`/search?${searchParams.toString()}`, accessToken),
+        ensureSpotifyDevice(accessToken),
+      ]);
       const track = searchResult?.tracks?.items?.[0];
 
       if (!track?.uri) {
         throw new Error(`Je n'ai pas trouvé de morceau Spotify pour "${searchQuery}".`);
       }
 
-      const deviceId = await ensureSpotifyDevice(accessToken);
-
-      await spotifyApiFetch("/me/player", accessToken, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          device_ids: [deviceId],
-          play: false,
-        }),
-      });
-
-      await spotifyApiFetch(`/me/player/play?device_id=${encodeURIComponent(deviceId)}`, accessToken, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          uris: [track.uri],
-        }),
-      });
+      await startSpotifyTrackPlayback(accessToken, device, track.uri);
 
       const artists = (track.artists || []).map((artist) => artist.name).join(", ");
       const confirmationMessage = `Lecture lancée : ${track.name}${artists ? ` de ${artists}` : ""}.`;
@@ -205,9 +282,9 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
 
     try {
       const accessToken = await ensureFreshSpotifyAccessToken();
-      const deviceId = await ensureSpotifyDevice(accessToken);
+      const device = await ensureSpotifyDevice(accessToken);
 
-      await spotifyApiFetch(`/me/player/pause?device_id=${encodeURIComponent(deviceId)}`, accessToken, {
+      await spotifyApiFetch(`/me/player/pause?device_id=${encodeURIComponent(device.id)}`, accessToken, {
         method: "PUT",
       });
 
@@ -228,9 +305,9 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
 
     try {
       const accessToken = await ensureFreshSpotifyAccessToken();
-      const deviceId = await ensureSpotifyDevice(accessToken);
+      const device = await ensureSpotifyDevice(accessToken);
 
-      await spotifyApiFetch(`/me/player/play?device_id=${encodeURIComponent(deviceId)}`, accessToken, {
+      await spotifyApiFetch(`/me/player/play?device_id=${encodeURIComponent(device.id)}`, accessToken, {
         method: "PUT",
       });
 
@@ -243,6 +320,21 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
     } finally {
       setIsSpotifyBusy(false);
     }
+  }
+
+  async function handleCreateNote(parameters) {
+    const normalizedNote = normalizeNoteToolParameters(parameters, sessionTimeZone);
+    const createdNote = await createNote(normalizedNote);
+    const confirmationMessage = `Note enregistrée : ${formatNoteTypeLabel(
+      createdNote.noteType
+    )} le ${formatNoteDate(createdNote.noteDate || createdNote.createdAt)}.`;
+
+    setLocalCreatedNotes((current) => mergeNotes(current, [createdNote]));
+    setActiveSidebarPanel("notes");
+    setToolNotice(confirmationMessage);
+    setRequestError("");
+
+    return confirmationMessage;
   }
 
   const calendarToolHandlers = {
@@ -278,6 +370,14 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
     stop_music: pauseSpotifyPlayback,
     resumeSpotify: resumeSpotifyPlayback,
     resume_spotify: resumeSpotifyPlayback,
+    createNote: handleCreateNote,
+    create_note: handleCreateNote,
+    addNote: handleCreateNote,
+    add_note: handleCreateNote,
+    saveNote: handleCreateNote,
+    save_note: handleCreateNote,
+    noterQuelqueChose: handleCreateNote,
+    noter_quelque_chose: handleCreateNote,
   };
 
   async function handleCreateCalendarEvent(parameters) {
@@ -529,12 +629,23 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
         activeConversationRef.current = null;
       }
 
+      if (userSpeechReleaseTimeoutRef.current) {
+        clearTimeout(userSpeechReleaseTimeoutRef.current);
+      }
+
+      setIsUserSpeaking(false);
       setIsConnecting(false);
     },
     onError: (error) => {
+      if (userSpeechReleaseTimeoutRef.current) {
+        clearTimeout(userSpeechReleaseTimeoutRef.current);
+      }
+
+      setIsUserSpeaking(false);
       setIsConnecting(false);
       setRequestError(describeError(error));
     },
+    onVadScore: handleVadScore,
     onUnhandledClientToolCall: async (toolCall) => {
       const toolName = extractToolName(toolCall);
       const parameters = extractToolParameters(toolCall);
@@ -554,6 +665,10 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
         }
 
         return await playSpotifySong(parameters);
+      }
+
+      if (looksLikeNoteTool(toolName)) {
+        return await handleCreateNote(parameters);
       }
 
       setRequestError(`Outil client ElevenLabs introuvable : ${toolName || "nom inconnu"}.`);
@@ -598,10 +713,15 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
     () => mergeEvents(localCreatedEvents, upcomingEvents),
     [localCreatedEvents, upcomingEvents]
   );
+  const mergedRecentNotes = useMemo(
+    () => mergeNotes(localCreatedNotes, recentNotes),
+    [localCreatedNotes, recentNotes]
+  );
   const spotifyConnected = Boolean(spotifySession?.accessToken && spotifyAccount);
   const remainingSeconds = profile.creditsPerSecond
     ? Math.max(0, Math.floor(profile.creditsRemaining / profile.creditsPerSecond))
     : 0;
+  const shouldDuckSpotifyVolume = isSpeaking || isUserSpeaking;
 
   const statusLabel = useMemo(() => {
     if (trialIsExhausted) {
@@ -631,6 +751,24 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
       behavior: "smooth",
     });
   }, [messages]);
+
+  useEffect(() => {
+    if (!spotifySession?.accessToken || !spotifyPlayerRef.current || !isSpotifyReady) {
+      return;
+    }
+
+    void setSpotifyPlaybackVolume(
+      shouldDuckSpotifyVolume ? SPOTIFY_DUCKED_VOLUME : SPOTIFY_NORMAL_VOLUME
+    );
+  }, [spotifySession?.accessToken, isSpotifyReady, shouldDuckSpotifyVolume]);
+
+  useEffect(() => {
+    return () => {
+      if (userSpeechReleaseTimeoutRef.current) {
+        clearTimeout(userSpeechReleaseTimeoutRef.current);
+      }
+    };
+  }, []);
 
   async function startConversation() {
     if (trialIsExhausted) {
@@ -689,6 +827,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
           profile,
           recentConversations,
           mergedUpcomingEvents,
+          mergedRecentNotes,
           dateContext,
           {
             connected: spotifyConnected,
@@ -705,13 +844,21 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
       activeConversationRef.current = startedConversationId;
       await createConversation({ externalId: startedConversationId });
       setLocalCreatedEvents([]);
+      setLocalCreatedNotes([]);
 
       conversation.sendContextualUpdate(
-        buildProfileContext(profile, recentConversations, mergedUpcomingEvents, dateContext, {
-          connected: spotifyConnected,
-          ready: isSpotifyReady,
-          nowPlaying: spotifyNowPlaying,
-        })
+        buildProfileContext(
+          profile,
+          recentConversations,
+          mergedUpcomingEvents,
+          mergedRecentNotes,
+          dateContext,
+          {
+            connected: spotifyConnected,
+            ready: isSpotifyReady,
+            nowPlaying: spotifyNowPlaying,
+          }
+        )
       );
     } catch (error) {
       if (startedConversationId) {
@@ -961,6 +1108,68 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
                     ? "Le lecteur Spotify de Papote est prêt. Un clic sur Discuter active aussi le lecteur dans le navigateur."
                     : "Après la connexion Spotify, laissez cette page ouverte. Le lecteur se prépare automatiquement."}
                 </p>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border border-white/80 bg-white/76 shadow-[0_24px_80px_rgba(0,127,112,0.08)] backdrop-blur-xl">
+            <CardHeader className="border-b border-[#007f70]/10">
+              <button
+                type="button"
+                onClick={() =>
+                  setActiveSidebarPanel((current) => (current === "notes" ? null : "notes"))
+                }
+                className="flex w-full items-center justify-between gap-4 text-left"
+              >
+                <div>
+                  <CardTitle className="flex items-center gap-2 text-xl">
+                    <FileText className="size-5 text-[#007f70]" />
+                    Notes
+                  </CardTitle>
+                  <CardDescription className="mt-2">
+                    Les informations importantes que Papote garde pour vous.
+                  </CardDescription>
+                </div>
+                <ChevronDown
+                  className={`size-5 text-[#64807b] transition-transform ${
+                    activeSidebarPanel === "notes" ? "rotate-180" : ""
+                  }`}
+                />
+              </button>
+            </CardHeader>
+            <CardContent
+              className={`overflow-hidden p-4 transition-all ${
+                activeSidebarPanel === "notes" ? "flex min-h-0 flex-col" : "hidden"
+              }`}
+            >
+              <div className="grid max-h-[22rem] gap-3 overflow-y-auto pr-1">
+                {mergedRecentNotes.length === 0 ? (
+                  <div className="flex min-h-40 flex-col justify-center rounded-3xl border border-dashed border-[#007f70]/15 bg-[#f5fbfa] px-5 text-center">
+                    <p className="text-sm font-medium text-[#244f49]">
+                      Aucune note enregistrée.
+                    </p>
+                    <p className="mt-2 text-sm leading-6 text-[#72908b]">
+                      Demandez à Papote de noter une information, un contact ou une recette.
+                    </p>
+                  </div>
+                ) : (
+                  mergedRecentNotes.map((note) => (
+                    <article
+                      key={note._id}
+                      className="rounded-3xl border border-[#007f70]/10 bg-[#f4fbf9] px-4 py-4 text-left"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-[11px] uppercase tracking-[0.2em] text-[#7a8f8b]">
+                          {formatNoteTypeLabel(note.noteType)}
+                        </p>
+                        <p className="text-[11px] uppercase tracking-[0.15em] text-[#7a8f8b]">
+                          {formatNoteDate(note.noteDate || note.createdAt)}
+                        </p>
+                      </div>
+                      <p className="mt-3 text-sm leading-6 text-[#173f3a]">{note.content}</p>
+                    </article>
+                  ))
+                )}
               </div>
             </CardContent>
           </Card>
@@ -1224,6 +1433,7 @@ function buildDynamicVariables(
   profile,
   recentConversations,
   upcomingEvents,
+  recentNotes,
   dateContext,
   spotifyContext = {}
 ) {
@@ -1249,6 +1459,7 @@ function buildDynamicVariables(
       : "",
     previous_conversations_summary: buildConversationSummary(recentConversations),
     upcoming_events_summary: buildUpcomingEventsSummary(upcomingEvents),
+    recent_notes_summary: buildNotesSummary(recentNotes),
   };
 }
 
@@ -1256,6 +1467,7 @@ function buildProfileContext(
   profile,
   recentConversations,
   upcomingEvents,
+  recentNotes,
   dateContext,
   spotifyContext = {}
 ) {
@@ -1274,7 +1486,9 @@ function buildProfileContext(
       ? `Historique récent : ${buildConversationSummary(recentConversations)}`
       : "Historique récent : aucune conversation précédente enregistrée.",
     `Évènements à venir : ${buildUpcomingEventsSummary(upcomingEvents)}`,
+    `Notes utiles : ${buildNotesSummary(recentNotes)}`,
     "Si l'utilisateur demande d'ajouter un rendez-vous ou un évènement à son calendrier, utilise l'outil client createCalendarEvent avec un titre et une date de début précise.",
+    "Si l'utilisateur demande de noter, mémoriser ou enregistrer une information, utilise l'outil client createNote avec le contenu, le type de note et la date si elle est connue.",
     spotifyContext.connected
       ? `Spotify est connecté${spotifyContext.ready ? " et le lecteur est prêt." : "."}`
       : "Spotify n'est pas encore connecté.",
@@ -1315,6 +1529,22 @@ function buildUpcomingEventsSummary(upcomingEvents) {
     .join(" || ");
 }
 
+function buildNotesSummary(recentNotes) {
+  if (!recentNotes?.length) {
+    return "Aucune note enregistrée pour le moment.";
+  }
+
+  return recentNotes
+    .slice(0, 5)
+    .map((note) => {
+      const noteDate = note.noteDate || note.createdAt;
+      return `${formatNoteTypeLabel(note.noteType)} : ${note.content}${
+        noteDate ? ` (${formatNoteDate(noteDate)})` : ""
+      }`;
+    })
+    .join(" || ");
+}
+
 function formatEventDate(value) {
   if (!Number.isFinite(value)) {
     return "date inconnue";
@@ -1337,6 +1567,28 @@ function formatEventTime(value) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function formatNoteDate(value) {
+  if (!Number.isFinite(value)) {
+    return "date inconnue";
+  }
+
+  return new Intl.DateTimeFormat("fr-FR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function formatNoteTypeLabel(value) {
+  const noteType = String(value || "").trim();
+  if (!noteType) {
+    return "Général";
+  }
+
+  return noteType.charAt(0).toUpperCase() + noteType.slice(1);
 }
 
 function formatCredits(value) {
@@ -1371,6 +1623,12 @@ function formatPlaybackTime(totalMilliseconds) {
   const seconds = totalSeconds % 60;
 
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function wait(durationMs) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, durationMs);
+  });
 }
 
 async function buildConversationDateContext(profile) {
@@ -1493,6 +1751,47 @@ function normalizeCalendarToolParameters(parameters, timeZone) {
     title,
     startAt: normalizeToolDateValue(startAt, timeZone),
     endAt: endAt ? normalizeToolDateValue(endAt, timeZone) : undefined,
+  };
+}
+
+function normalizeNoteToolParameters(parameters, timeZone) {
+  const normalizedParameters = normalizeToolParameters(parameters);
+  const content = firstNonEmptyString(
+    normalizedParameters?.content,
+    normalizedParameters?.note,
+    normalizedParameters?.text,
+    normalizedParameters?.body,
+    normalizedParameters?.message,
+    normalizedParameters?.summary,
+    normalizedParameters?.details,
+    normalizedParameters?.raw
+  );
+  const noteType = firstNonEmptyString(
+    normalizedParameters?.noteType,
+    normalizedParameters?.type,
+    normalizedParameters?.category,
+    normalizedParameters?.kind,
+    normalizedParameters?.label
+  );
+  const noteDate =
+    buildDateTimeFromParts(normalizedParameters) ||
+    firstNonEmptyString(
+      normalizedParameters?.noteDate,
+      normalizedParameters?.date,
+      normalizedParameters?.datetime,
+      normalizedParameters?.scheduledFor,
+      normalizedParameters?.scheduled_for,
+      normalizedParameters?.when
+    );
+
+  if (!content) {
+    throw new Error("Le contenu de la note est manquant dans l'appel outil.");
+  }
+
+  return {
+    content,
+    noteType: noteType || "général",
+    noteDate: noteDate ? normalizeToolDateValue(noteDate, timeZone) : undefined,
   };
 }
 
@@ -1675,6 +1974,20 @@ function mergeEvents(localEvents, remoteEvents) {
   return Array.from(byId.values()).sort((left, right) => left.startAt - right.startAt);
 }
 
+function mergeNotes(localNotes, remoteNotes) {
+  const byId = new Map();
+
+  [...remoteNotes, ...localNotes].forEach((note) => {
+    byId.set(note._id, note);
+  });
+
+  return Array.from(byId.values()).sort((left, right) => {
+    const leftTimestamp = left.noteDate || left.createdAt || 0;
+    const rightTimestamp = right.noteDate || right.createdAt || 0;
+    return rightTimestamp - leftTimestamp;
+  });
+}
+
 function extractToolName(toolCall) {
   return String(
     toolCall?.tool_name ||
@@ -1730,6 +2043,24 @@ function looksLikeSpotifyTool(toolName) {
   );
 }
 
+function looksLikeNoteTool(toolName) {
+  const normalized = normalizeToolIdentifier(toolName);
+
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    normalized.includes("note") ||
+    normalized.includes("memo") ||
+    normalized.includes("remember") ||
+    normalized.includes("save") ||
+    normalized.includes("write") ||
+    normalized.includes("contact") ||
+    normalized.includes("recette")
+  );
+}
+
 function inferSidebarPanelFromText(text) {
   const normalized = normalizeToolIdentifier(text);
 
@@ -1756,6 +2087,19 @@ function inferSidebarPanelFromText(text) {
     normalized.includes("playlist")
   ) {
     return "music";
+  }
+
+  if (
+    normalized.includes("note") ||
+    normalized.includes("noter") ||
+    normalized.includes("memo") ||
+    normalized.includes("souviens") ||
+    normalized.includes("retenir") ||
+    normalized.includes("contact") ||
+    normalized.includes("recette") ||
+    normalized.includes("liste")
+  ) {
+    return "notes";
   }
 
   return null;

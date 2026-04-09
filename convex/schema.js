@@ -47,4 +47,12 @@ export default defineSchema({
     createdAt: v.number(),
     updatedAt: v.number(),
   }).index("by_user_startAt", ["userId", "startAt"]),
+  notes: defineTable({
+    userId: v.string(),
+    content: v.string(),
+    noteType: v.string(),
+    noteDate: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_user_createdAt", ["userId", "createdAt"]),
 });
