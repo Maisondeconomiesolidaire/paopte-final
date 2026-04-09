@@ -123,7 +123,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
 
   const statusLabel = useMemo(() => {
     if (trialIsExhausted) {
-      return "Essai termine";
+      return "Essai terminé";
     }
 
     switch (status) {
@@ -134,7 +134,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
       case "disconnecting":
         return "Fin";
       default:
-        return "Pret";
+        return "Prêt";
     }
   }, [status, trialIsExhausted]);
 
@@ -236,7 +236,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
                 Agenda
               </CardTitle>
               <CardDescription>
-                Les prochains evenements a garder en tete pendant la conversation.
+                Les prochains évènements à garder en tête pendant la conversation.
               </CardDescription>
             </CardHeader>
             <CardContent className="flex flex-1 min-h-0 flex-col overflow-hidden p-4">
@@ -244,10 +244,10 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
                 {mergedUpcomingEvents.length === 0 ? (
                   <div className="flex min-h-48 flex-col justify-center rounded-3xl border border-dashed border-[#007f70]/15 bg-[#f5fbfa] px-5 text-center">
                     <p className="text-sm font-medium text-[#244f49]">
-                      Aucun evenement a venir.
+                      Aucun évènement à venir.
                     </p>
                     <p className="mt-2 text-sm leading-6 text-[#72908b]">
-                      Demandez a Papote d&apos;en ajouter un pour commencer votre agenda.
+                      Demandez à Papote d&apos;en ajouter un pour commencer votre agenda.
                     </p>
                   </div>
                 ) : (
@@ -311,7 +311,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
             >
               <Clock3 className="size-4" />
               {trialIsExhausted
-                ? "Essai beta termine"
+                ? "Essai bêta terminé"
                 : `${formatDuration(remainingSeconds)} restantes`}
             </Badge>
           </div>
@@ -336,7 +336,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
           </div>
 
           <div className="mt-4 max-w-xl rounded-[28px] border border-white/80 bg-white/78 px-5 py-4 text-left shadow-[0_20px_60px_rgba(0,127,112,0.08)]">
-            <p className="text-xs uppercase tracking-[0.24em] text-[#7a8f8b]">Essai beta</p>
+            <p className="text-xs uppercase tracking-[0.24em] text-[#7a8f8b]">Essai bêta</p>
             <p className="mt-2 text-sm font-medium text-[#173f3a]">
               {profile.trialDurationMinutes} minutes offertes a l&apos;inscription.
             </p>
@@ -373,24 +373,10 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
                 Fil en direct
               </CardTitle>
               <CardDescription>
-                La conversation s&apos;affiche ici en temps reel.
+                La conversation s&apos;affiche ici en temps réel.
               </CardDescription>
             </CardHeader>
             <CardContent className="flex flex-1 min-h-0 flex-col gap-4 overflow-hidden p-4">
-              <div className="rounded-3xl border border-[#007f70]/10 bg-[#f4fbf9] px-4 py-4">
-                <p className="text-[11px] uppercase tracking-[0.2em] text-[#78908b]">
-                  Solde d&apos;essai
-                </p>
-                <p className="mt-2 text-lg font-semibold text-[#173f3a]">
-                  {trialIsExhausted
-                    ? "Essai termine"
-                    : `${formatDuration(remainingSeconds)} encore disponibles`}
-                </p>
-                <p className="mt-2 text-sm leading-6 text-[#5f7b76]">
-                  Cout de reference: {formatCredits(profile.creditsPerSecond)} credits par seconde.
-                </p>
-              </div>
-
               <div className="grid flex-1 gap-3 overflow-y-auto pr-1">
                 {messages.length === 0 ? (
                   <div className="flex min-h-48 flex-col items-center justify-center rounded-3xl border border-dashed border-[#007f70]/15 bg-[#f5fbfa] px-5 text-center">
@@ -399,7 +385,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
                       Aucun message pour le moment
                     </p>
                     <p className="mt-2 text-sm leading-6 text-[#72908b]">
-                      Lancez la conversation pour voir apparaitre le fil de transcription.
+                      Lancez la conversation pour voir apparaître le fil de transcription.
                     </p>
                   </div>
                 ) : (
@@ -440,7 +426,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
             <CardHeader>
               <CardTitle className="flex items-center gap-3 text-2xl text-[#173f3a]">
                 <ShieldAlert className="size-7 text-[#b6505f]" />
-                Essai termine
+                Essai terminé
               </CardTitle>
               <CardDescription className="text-base leading-7 text-[#5f7470]">
                 {TRIAL_EXHAUSTED_MESSAGE}
@@ -615,7 +601,7 @@ function buildConversationSummary(recentConversations) {
 
 function buildUpcomingEventsSummary(upcomingEvents) {
   if (!upcomingEvents?.length) {
-    return "Aucun evenement a venir, demandez a Papote d'en ajouter un.";
+    return "Aucun évènement à venir, demandez à Papote d'en ajouter un.";
   }
 
   return upcomingEvents

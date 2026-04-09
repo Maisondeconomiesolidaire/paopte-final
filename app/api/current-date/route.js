@@ -34,23 +34,18 @@ export async function GET(request) {
   }
 
   const now = new Date();
+  const localParts = getLocalDateParts(now, timeZone);
 
   return NextResponse.json({
     timeZone,
     iso: now.toISOString(),
-    promptValue: formatPromptDate(now, timeZone),
+    promptValue: formatPromptDate(localParts, timeZone),
     displayValue: formatDisplayDate(now, timeZone),
   });
 }
 
-function formatPromptDate(date, timeZone) {
-  const formatted = new Intl.DateTimeFormat("fr-FR", {
-    dateStyle: "full",
-    timeStyle: "short",
-    timeZone,
-  }).format(date);
-
-  return `${formatted} (${timeZone})`;
+function formatPromptDate(localParts, timeZone) {
+  return `${localParts.date} ${localParts.time} (${timeZone})`;
 }
 
 function formatDisplayDate(date, timeZone) {
@@ -59,4 +54,28 @@ function formatDisplayDate(date, timeZone) {
     timeStyle: "short",
     timeZone,
   }).format(date);
+}
+
+function getLocalDateParts(date, timeZone) {
+  const parts = new Intl.DateTimeFormat("sv-SE", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZone,
+  }).formatToParts(date);
+
+  const values = Object.fromEntries(
+    parts
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value])
+  );
+
+  return {
+    date: `${values.year}-${values.month}-${values.day}`,
+    time: `${values.hour}:${values.minute}:${values.second}`,
+  };
 }

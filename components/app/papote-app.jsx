@@ -15,6 +15,9 @@ import { VoiceStudio } from "@/components/app/voice-studio";
 export function PapoteApp() {
   const { isLoaded, isSignedIn, redirectToSignIn } = useAuth();
   const { isLoading: isConvexLoading, isAuthenticated } = useConvexAuth();
+  const connectingState = (
+    <CenteredState title="Connexion en cours" description="Connexion en cours..." />
+  );
 
   useEffect(() => {
     if (isLoaded && isSignedIn === false) {
@@ -23,26 +26,15 @@ export function PapoteApp() {
   }, [isLoaded, isSignedIn, redirectToSignIn]);
 
   if (!isLoaded) {
-    return <CenteredState title="Chargement" description="Connexion a votre espace Papote..." />;
+    return connectingState;
   }
 
   if (!isSignedIn) {
-    return (
-      <CenteredState
-        title="Connexion requise"
-        description="Redirection vers la page de connexion..."
-        showSignIn
-      />
-    );
+    return connectingState;
   }
 
   if (isConvexLoading) {
-    return (
-      <CenteredState
-        title="Connexion en cours"
-        description="Verification de votre session Convex..."
-      />
-    );
+    return connectingState;
   }
 
   if (!isAuthenticated) {

@@ -12,14 +12,17 @@ export const upcomingForCurrent = query({
     }
 
     const limit = clampLimit(args.limit);
-    const startAtFloor = getStartOfTodayUtc();
     const events = await ctx.db
       .query("events")
-      .withIndex("by_user_startAt", (q) => q.eq("userId", userId).gte("startAt", startAtFloor))
+      .withIndex("by_user_startAt", (q) => q.eq("userId", userId))
       .order("asc")
-      .take(limit);
+      .take(50);
 
-    return events.map(formatEvent);
+    const visibleEvents = events
+      .filter((event) => isUpcomingOrRecentlyCreated(event))
+      .slice(0, limit);
+
+    return visibleEvents.map(formatEvent);
   },
 });
 
@@ -94,11 +97,6 @@ function clampLimit(limit) {
   return Math.min(Math.max(Math.trunc(limit), 1), 20);
 }
 
-function getStartOfTodayUtc() {
-  const now = new Date();
-  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-}
-
 function formatEvent(event) {
   return {
     _id: event._id,
@@ -109,4 +107,12 @@ function formatEvent(event) {
     createdAt: event.createdAt,
     updatedAt: event.updatedAt,
   };
+}
+
+function isUpcomingOrRecentlyCreated(event) {
+  const now = Date.now();
+  const recentWindowMs = 24 * 60 * 60 * 1000;
+  const effectiveEndAt = typeof event.endAt === "number" ? event.endAt : event.startAt;
+
+  return effectiveEndAt >= now - recentWindowMs;
 }
