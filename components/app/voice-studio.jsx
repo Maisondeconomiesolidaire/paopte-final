@@ -26,6 +26,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
   const [requestError, setRequestError] = useState("");
   const [disconnectReason, setDisconnectReason] = useState("");
   const [toolNotice, setToolNotice] = useState("");
+  const [localCreatedEvents, setLocalCreatedEvents] = useState([]);
   const [isConnecting, setIsConnecting] = useState(false);
   const activeConversationRef = useRef(null);
   const createConversation = useMutation(api.conversations.start);
@@ -40,6 +41,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
       createdEvent.startAt
     )}.`;
 
+    setLocalCreatedEvents((current) => mergeEvents(current, [createdEvent]));
     setToolNotice(confirmationMessage);
     setRequestError("");
 
@@ -111,6 +113,10 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
 
   const { status, isSpeaking } = conversation;
   const trialIsExhausted = profile.isTrialExhausted;
+  const mergedUpcomingEvents = useMemo(
+    () => mergeEvents(localCreatedEvents, upcomingEvents),
+    [localCreatedEvents, upcomingEvents]
+  );
   const remainingSeconds = profile.creditsPerSecond
     ? Math.max(0, Math.floor(profile.creditsRemaining / profile.creditsPerSecond))
     : 0;
@@ -156,7 +162,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
 
     try {
       await navigator.mediaDevices.getUserMedia({ audio: true });
-      const dateContext = buildConversationDateContext(profile);
+      const dateContext = await buildConversationDateContext(profile);
 
       const response = await fetch("/api/signed-url", {
         method: "POST",
@@ -180,7 +186,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
         dynamicVariables: buildDynamicVariables(
           profile,
           recentConversations,
-          upcomingEvents,
+          mergedUpcomingEvents,
           dateContext
         ),
         workletPaths: {
@@ -193,7 +199,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
       await createConversation({ externalId: startedConversationId });
 
       conversation.sendContextualUpdate(
-        buildProfileContext(profile, recentConversations, upcomingEvents, dateContext)
+        buildProfileContext(profile, recentConversations, mergedUpcomingEvents, dateContext)
       );
     } catch (error) {
       if (startedConversationId) {
@@ -235,7 +241,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
             </CardHeader>
             <CardContent className="flex flex-1 min-h-0 flex-col overflow-hidden p-4">
               <div className="grid flex-1 gap-3 overflow-y-auto pr-1">
-                {upcomingEvents.length === 0 ? (
+                {mergedUpcomingEvents.length === 0 ? (
                   <div className="flex min-h-48 flex-col justify-center rounded-3xl border border-dashed border-[#007f70]/15 bg-[#f5fbfa] px-5 text-center">
                     <p className="text-sm font-medium text-[#244f49]">
                       Aucun evenement a venir.
@@ -245,7 +251,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
                     </p>
                   </div>
                 ) : (
-                  upcomingEvents.map((event) => (
+                  mergedUpcomingEvents.map((event) => (
                     <article
                       key={event._id}
                       className="rounded-3xl border border-[#007f70]/10 bg-[#f4fbf9] px-4 py-4 text-left"
@@ -561,7 +567,8 @@ function buildDynamicVariables(profile, recentConversations, upcomingEvents, dat
     user_city: profile.city,
     user_address: profile.addressLabel || profile.city,
     user_bio: profile.bio,
-    date: dateContext.label,
+    date: dateContext.promptValue,
+    date_iso: dateContext.iso,
     current_time_zone: dateContext.timeZone,
     current_location_label: dateContext.locationLabel,
     previous_conversations_summary: buildConversationSummary(recentConversations),
@@ -572,7 +579,8 @@ function buildDynamicVariables(profile, recentConversations, upcomingEvents, dat
 function buildProfileContext(profile, recentConversations, upcomingEvents, dateContext) {
   return [
     "Contexte utilisateur pour cette conversation :",
-    `Date et heure actuelles : ${dateContext.label}`,
+    `Date et heure actuelles : ${dateContext.promptValue}`,
+    `Date ISO actuelle : ${dateContext.iso}`,
     `Fuseau horaire utilisateur : ${dateContext.timeZone}`,
     `Prenom : ${profile.firstName}`,
     `Nom : ${profile.lastName}`,
@@ -662,21 +670,67 @@ function formatDuration(totalSeconds) {
   return `${seconds} s`;
 }
 
-function buildConversationDateContext(profile) {
-  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+async function buildConversationDateContext(profile) {
+  const fallbackTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   const now = new Date();
-  const locationLabel = profile.addressLabel || profile.city || "localisation inconnue";
-  const localizedDate = new Intl.DateTimeFormat("fr-FR", {
+  const fallbackLocationLabel = profile.addressLabel || profile.city || "localisation inconnue";
+  const fallbackDisplayValue = new Intl.DateTimeFormat("fr-FR", {
     dateStyle: "full",
     timeStyle: "short",
-    timeZone,
+    timeZone: fallbackTimeZone,
   }).format(now);
+  const fallbackPromptValue = `${fallbackDisplayValue} (${fallbackTimeZone})`;
 
-  return {
-    label: `${localizedDate} - ${locationLabel}`,
-    timeZone,
-    locationLabel,
-  };
+  if (!Number.isFinite(profile.latitude) || !Number.isFinite(profile.longitude)) {
+    return {
+      promptValue: fallbackPromptValue,
+      displayValue: fallbackDisplayValue,
+      iso: now.toISOString(),
+      timeZone: fallbackTimeZone,
+      locationLabel: fallbackLocationLabel,
+    };
+  }
+
+  try {
+    const params = new URLSearchParams({
+      latitude: String(profile.latitude),
+      longitude: String(profile.longitude),
+    });
+    const response = await fetch(`/api/current-date?${params.toString()}`, {
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      throw new Error("Impossible de recuperer la date actuelle.");
+    }
+
+    const data = await response.json();
+    return {
+      promptValue:
+        typeof data.promptValue === "string" && data.promptValue.trim()
+          ? data.promptValue
+          : fallbackPromptValue,
+      displayValue:
+        typeof data.displayValue === "string" && data.displayValue.trim()
+          ? data.displayValue
+          : fallbackDisplayValue,
+      iso:
+        typeof data.iso === "string" && data.iso.trim() ? data.iso : now.toISOString(),
+      timeZone:
+        typeof data.timeZone === "string" && data.timeZone.trim()
+          ? data.timeZone
+          : fallbackTimeZone,
+      locationLabel: fallbackLocationLabel,
+    };
+  } catch {
+    return {
+      promptValue: fallbackPromptValue,
+      displayValue: fallbackDisplayValue,
+      iso: now.toISOString(),
+      timeZone: fallbackTimeZone,
+      locationLabel: fallbackLocationLabel,
+    };
+  }
 }
 
 function sanitizeVisibleText(text) {
@@ -722,8 +776,8 @@ function normalizeCalendarToolParameters(parameters) {
 
   return {
     title,
-    startAt,
-    endAt: endAt || undefined,
+    startAt: normalizeToolDateValue(startAt),
+    endAt: endAt ? normalizeToolDateValue(endAt) : undefined,
   };
 }
 
@@ -735,7 +789,8 @@ function buildDateTimeFromParts(parameters) {
     return "";
   }
 
-  return time ? `${date}T${time}` : date;
+  const rawValue = time ? `${date}T${time}` : `${date}T12:00:00`;
+  return normalizeToolDateValue(rawValue);
 }
 
 function buildEndDateTimeFromParts(parameters) {
@@ -757,4 +812,29 @@ function firstNonEmptyString(...values) {
   }
 
   return "";
+}
+
+function normalizeToolDateValue(value) {
+  if (typeof value !== "string" || !value.trim()) {
+    return "";
+  }
+
+  const trimmedValue = value.trim();
+  const parsedDate = new Date(trimmedValue);
+
+  if (!Number.isNaN(parsedDate.getTime())) {
+    return parsedDate.toISOString();
+  }
+
+  return trimmedValue;
+}
+
+function mergeEvents(localEvents, remoteEvents) {
+  const byId = new Map();
+
+  [...remoteEvents, ...localEvents].forEach((event) => {
+    byId.set(event._id, event);
+  });
+
+  return Array.from(byId.values()).sort((left, right) => left.startAt - right.startAt);
 }

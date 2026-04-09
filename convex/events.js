@@ -12,9 +12,10 @@ export const upcomingForCurrent = query({
     }
 
     const limit = clampLimit(args.limit);
+    const startAtFloor = getStartOfTodayUtc();
     const events = await ctx.db
       .query("events")
-      .withIndex("by_user_startAt", (q) => q.eq("userId", userId).gte("startAt", Date.now()))
+      .withIndex("by_user_startAt", (q) => q.eq("userId", userId).gte("startAt", startAtFloor))
       .order("asc")
       .take(limit);
 
@@ -91,6 +92,11 @@ function clampLimit(limit) {
   }
 
   return Math.min(Math.max(Math.trunc(limit), 1), 20);
+}
+
+function getStartOfTodayUtc() {
+  const now = new Date();
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
 }
 
 function formatEvent(event) {
