@@ -1,11 +1,12 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 
+import {
+  calculateEstimatedCostCredits,
+  normalizeCreditsOffered,
+  normalizeCreditsUsed,
+} from "./credits";
 import { getCurrentProfile } from "./profiles";
-
-const CREDITS_PER_30_SECONDS = 336;
-const SECONDS_PER_30_SECONDS = 30;
-const CREDITS_PER_SECOND = CREDITS_PER_30_SECONDS / SECONDS_PER_30_SECONDS;
 
 export const recentForCurrent = query({
   args: {},
@@ -31,7 +32,10 @@ export const recentForCurrent = query({
       messageCount: conversation.messageCount,
       estimatedCostCredits: getConversationEstimatedCostCredits(conversation),
       summary: conversation.summary ?? buildSummary(conversation.transcript),
-      transcript: conversation.transcript,
+      transcript: conversation.transcript.map((message) => ({
+        ...message,
+        text: sanitizeTranscriptText(message.text),
+      })),
     }));
   },
 });
@@ -44,6 +48,10 @@ export const start = mutation({
     const profile = await getCurrentProfile(ctx);
     if (!profile) {
       throw new Error("Utilisateur non authentifie.");
+    }
+
+    if (profile.isTrialExhausted) {
+      throw new Error("Vous avez utilise tous vos credits, merci pour votre essai.");
     }
 
     const existing = await ctx.db
@@ -98,7 +106,7 @@ export const appendMessage = mutation({
       ...conversation.transcript,
       {
         role: args.role,
-        text: args.text,
+        text: sanitizeTranscriptText(args.text),
         timestamp: args.timestamp,
       },
     ];
@@ -130,9 +138,16 @@ export const end = mutation({
       return null;
     }
 
+    if (conversation.status === "completed") {
+      return conversation._id;
+    }
+
     const endedAt = Date.now();
     const durationSeconds = calculateDurationSeconds(conversation.startedAt, endedAt);
     const estimatedCostCredits = calculateEstimatedCostCredits(durationSeconds);
+    const creditsOffered = normalizeCreditsOffered(profile.creditsOffered);
+    const creditsUsed = normalizeCreditsUsed(profile.creditsUsed);
+    const updatedCreditsUsed = normalizeCreditsUsed(creditsUsed + estimatedCostCredits);
 
     await ctx.db.patch(conversation._id, {
       endedAt: endedAt,
@@ -141,6 +156,11 @@ export const end = mutation({
       status: "completed",
       summary: buildSummary(conversation.transcript),
     });
+    await ctx.db.patch(profile._id, {
+      creditsOffered,
+      creditsUsed: updatedCreditsUsed,
+      updatedAt: Date.now(),
+    });
 
     return conversation._id;
   },
@@ -148,10 +168,6 @@ export const end = mutation({
 
 function calculateDurationSeconds(startedAt, endedAt) {
   return Math.max(0, (endedAt - startedAt) / 1000);
-}
-
-function calculateEstimatedCostCredits(durationSeconds) {
-  return Number((durationSeconds * CREDITS_PER_SECOND).toFixed(2));
 }
 
 function getConversationDurationSeconds(conversation) {
@@ -186,6 +202,22 @@ function buildSummary(transcript) {
 
   return transcript
     .slice(0, 6)
-    .map((message) => `${message.role === "agent" ? "Papote" : "Utilisateur"}: ${message.text}`)
+    .map((message) => {
+      const visibleText = sanitizeTranscriptText(message.text);
+      return `${message.role === "agent" ? "Papote" : "Utilisateur"}: ${visibleText}`;
+    })
     .join(" | ");
+}
+
+function sanitizeTranscriptText(text) {
+  if (typeof text !== "string") {
+    return "Message sans contenu visible.";
+  }
+
+  const visibleText = text
+    .replace(/\[[^\]]*\]\s*/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
+  return visibleText || "Message sans contenu visible.";
 }

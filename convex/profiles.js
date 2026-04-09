@@ -1,6 +1,16 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 
+import {
+  CREDITS_PER_SECOND,
+  FREE_TRIAL_MINUTES,
+  FREE_TRIAL_SECONDS,
+  getRemainingCredits,
+  isTrialExhausted,
+  normalizeCreditsOffered,
+  normalizeCreditsUsed,
+} from "./credits";
+
 export const current = query({
   args: {},
   handler: async (ctx) => {
@@ -42,6 +52,8 @@ export const upsertCurrent = mutation({
       bio: args.bio.trim(),
       latitude: args.latitude,
       longitude: args.longitude,
+      creditsOffered: normalizeCreditsOffered(existing?.creditsOffered),
+      creditsUsed: normalizeCreditsUsed(existing?.creditsUsed),
       onboardingCompleted: true,
       updatedAt: Date.now(),
     };
@@ -77,8 +89,18 @@ function normalizeProfile(profile) {
     return null;
   }
 
+  const creditsOffered = normalizeCreditsOffered(profile.creditsOffered);
+  const creditsUsed = normalizeCreditsUsed(profile.creditsUsed);
+
   return {
     ...profile,
+    creditsOffered,
+    creditsUsed,
+    creditsRemaining: getRemainingCredits(creditsOffered, creditsUsed),
+    creditsPerSecond: CREDITS_PER_SECOND,
+    trialDurationMinutes: FREE_TRIAL_MINUTES,
+    trialDurationSeconds: FREE_TRIAL_SECONDS,
+    isTrialExhausted: isTrialExhausted(creditsOffered, creditsUsed),
     onboardingCompleted: profile.onboardingCompleted || hasRequiredProfileFields(profile),
   };
 }

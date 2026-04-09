@@ -13,6 +13,8 @@ export default defineSchema({
     bio: v.string(),
     latitude: v.optional(v.number()),
     longitude: v.optional(v.number()),
+    creditsOffered: v.optional(v.number()),
+    creditsUsed: v.optional(v.number()),
     onboardingCompleted: v.boolean(),
     createdAt: v.number(),
     updatedAt: v.number(),
@@ -37,4 +39,12 @@ export default defineSchema({
   })
     .index("by_external_id", ["externalId"])
     .index("by_profile_started", ["profileId", "startedAt"]),
+  events: defineTable({
+    userId: v.string(),
+    title: v.string(),
+    startAt: v.number(),
+    endAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_user_startAt", ["userId", "startAt"]),
 });
