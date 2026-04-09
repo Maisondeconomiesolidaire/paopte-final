@@ -52,6 +52,7 @@ export default defineSchema({
     content: v.string(),
     noteType: v.string(),
     noteDate: v.optional(v.number()),
+    noteDateLabel: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.number(),
   }).index("by_user_createdAt", ["userId", "createdAt"]),

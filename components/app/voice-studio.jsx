@@ -125,16 +125,39 @@ export function VoiceStudio({
   }
 
   async function ensureSpotifyDevice(accessToken) {
-    if (spotifyDeviceId) {
-      return { id: spotifyDeviceId, isActive: true };
+    const resolveDevice = async () => {
+      const devicesResponse = await spotifyApiFetch("/me/player/devices", accessToken);
+      const devices = Array.isArray(devicesResponse?.devices) ? devicesResponse.devices : [];
+      const matchingCachedDevice = spotifyDeviceId
+        ? devices.find((device) => device.id === spotifyDeviceId)
+        : null;
+      const browserDevice = devices.find((device) => device.name === "Papote");
+      const activeDevice = devices.find((device) => device.is_active);
+      const device = matchingCachedDevice || browserDevice || activeDevice || devices[0];
+
+      return device
+        ? {
+            id: device.id,
+            isActive: Boolean(device.is_active),
+          }
+        : null;
+    };
+
+    let device = await resolveDevice();
+
+    if (!device?.id && spotifyPlayerRef.current?.activateElement) {
+      try {
+        await spotifyPlayerRef.current.activateElement();
+      } catch {
+        // Best effort only.
+      }
+
+      await wait(450);
+      device = await resolveDevice();
     }
 
-    const devicesResponse = await spotifyApiFetch("/me/player/devices", accessToken);
-    const browserDevice = devicesResponse?.devices?.find((device) => device.name === "Papote");
-    const activeDevice = devicesResponse?.devices?.find((device) => device.is_active);
-    const device = browserDevice || activeDevice || devicesResponse?.devices?.[0];
-
     if (!device?.id) {
+      setSpotifyDeviceId("");
       throw new Error(
         "Le lecteur Spotify n'est pas encore prêt. Rechargez la page puis cliquez sur Discuter."
       );
@@ -160,45 +183,55 @@ export function VoiceStudio({
   }
 
   async function startSpotifyTrackPlayback(accessToken, device, trackUri) {
-    if (!device?.isActive) {
+    const transferToDevice = async (targetDevice) => {
+      if (!targetDevice?.id || targetDevice.isActive) {
+        return;
+      }
+
       await spotifyApiFetch("/me/player", accessToken, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          device_ids: [device.id],
+          device_ids: [targetDevice.id],
           play: false,
         }),
       });
-    }
+    };
+
+    const playOnDevice = async (targetDevice) => {
+      const suffix = targetDevice?.id
+        ? `?device_id=${encodeURIComponent(targetDevice.id)}`
+        : "";
+
+      await spotifyApiFetch(`/me/player/play${suffix}`, accessToken, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          uris: [trackUri],
+        }),
+      });
+    };
 
     try {
-      await spotifyApiFetch(`/me/player/play?device_id=${encodeURIComponent(device.id)}`, accessToken, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          uris: [trackUri],
-        }),
-      });
+      await transferToDevice(device);
+      await playOnDevice(device);
     } catch (error) {
-      await wait(350);
-
-      await spotifyApiFetch(`/me/player/play?device_id=${encodeURIComponent(device.id)}`, accessToken, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          uris: [trackUri],
-        }),
-      });
-
-      if (error) {
+      if (!isSpotifyDeviceNotFoundError(error)) {
+        await wait(350);
+        await playOnDevice(device);
         return;
       }
+
+      setSpotifyDeviceId("");
+      await wait(450);
+      const refreshedDevice = await ensureSpotifyDevice(accessToken);
+      await transferToDevice(refreshedDevice);
+      await wait(250);
+      await playOnDevice(refreshedDevice);
     }
   }
 
@@ -283,10 +316,25 @@ export function VoiceStudio({
     try {
       const accessToken = await ensureFreshSpotifyAccessToken();
       const device = await ensureSpotifyDevice(accessToken);
+      try {
+        await spotifyApiFetch(
+          `/me/player/pause?device_id=${encodeURIComponent(device.id)}`,
+          accessToken,
+          {
+            method: "PUT",
+          }
+        );
+      } catch (error) {
+        if (!isSpotifyDeviceNotFoundError(error)) {
+          throw error;
+        }
 
-      await spotifyApiFetch(`/me/player/pause?device_id=${encodeURIComponent(device.id)}`, accessToken, {
-        method: "PUT",
-      });
+        setSpotifyDeviceId("");
+        await wait(300);
+        await spotifyApiFetch("/me/player/pause", accessToken, {
+          method: "PUT",
+        });
+      }
 
       const confirmationMessage = "Lecture Spotify mise en pause.";
       setActiveSidebarPanel("music");
@@ -306,10 +354,25 @@ export function VoiceStudio({
     try {
       const accessToken = await ensureFreshSpotifyAccessToken();
       const device = await ensureSpotifyDevice(accessToken);
+      try {
+        await spotifyApiFetch(
+          `/me/player/play?device_id=${encodeURIComponent(device.id)}`,
+          accessToken,
+          {
+            method: "PUT",
+          }
+        );
+      } catch (error) {
+        if (!isSpotifyDeviceNotFoundError(error)) {
+          throw error;
+        }
 
-      await spotifyApiFetch(`/me/player/play?device_id=${encodeURIComponent(device.id)}`, accessToken, {
-        method: "PUT",
-      });
+        setSpotifyDeviceId("");
+        await wait(300);
+        await spotifyApiFetch("/me/player/play", accessToken, {
+          method: "PUT",
+        });
+      }
 
       const confirmationMessage = "Lecture Spotify reprise.";
       setActiveSidebarPanel("music");
@@ -327,7 +390,7 @@ export function VoiceStudio({
     const createdNote = await createNote(normalizedNote);
     const confirmationMessage = `Note enregistrée : ${formatNoteTypeLabel(
       createdNote.noteType
-    )} le ${formatNoteDate(createdNote.noteDate || createdNote.createdAt)}.`;
+    )} ${buildNoteDateConfirmation(createdNote)}.`;
 
     setLocalCreatedNotes((current) => mergeNotes(current, [createdNote]));
     setActiveSidebarPanel("notes");
@@ -539,6 +602,7 @@ export function VoiceStudio({
 
         player.addListener("not_ready", () => {
           setIsSpotifyReady(false);
+          setSpotifyDeviceId("");
         });
 
         player.addListener("player_state_changed", (state) => {
@@ -1163,7 +1227,7 @@ export function VoiceStudio({
                           {formatNoteTypeLabel(note.noteType)}
                         </p>
                         <p className="text-[11px] uppercase tracking-[0.15em] text-[#7a8f8b]">
-                          {formatNoteDate(note.noteDate || note.createdAt)}
+                          {formatStoredNoteDate(note)}
                         </p>
                       </div>
                       <p className="mt-3 text-sm leading-6 text-[#173f3a]">{note.content}</p>
@@ -1537,9 +1601,9 @@ function buildNotesSummary(recentNotes) {
   return recentNotes
     .slice(0, 5)
     .map((note) => {
-      const noteDate = note.noteDate || note.createdAt;
+      const noteDateLabel = buildStoredNoteDateLabel(note);
       return `${formatNoteTypeLabel(note.noteType)} : ${note.content}${
-        noteDate ? ` (${formatNoteDate(noteDate)})` : ""
+        noteDateLabel ? ` (${noteDateLabel})` : ""
       }`;
     })
     .join(" || ");
@@ -1589,6 +1653,27 @@ function formatNoteTypeLabel(value) {
   }
 
   return noteType.charAt(0).toUpperCase() + noteType.slice(1);
+}
+
+function formatStoredNoteDate(note) {
+  return buildStoredNoteDateLabel(note) || "sans date";
+}
+
+function buildNoteDateConfirmation(note) {
+  const noteDateLabel = buildStoredNoteDateLabel(note);
+  return noteDateLabel ? `pour ${noteDateLabel}.` : "sans date précise.";
+}
+
+function buildStoredNoteDateLabel(note) {
+  if (Number.isFinite(note?.noteDate)) {
+    return formatNoteDate(note.noteDate);
+  }
+
+  if (typeof note?.noteDateLabel === "string" && note.noteDateLabel.trim()) {
+    return note.noteDateLabel.trim();
+  }
+
+  return "";
 }
 
 function formatCredits(value) {
@@ -1759,8 +1844,11 @@ function normalizeNoteToolParameters(parameters, timeZone) {
   const content = firstNonEmptyString(
     normalizedParameters?.content,
     normalizedParameters?.note,
+    normalizedParameters?.title,
     normalizedParameters?.text,
     normalizedParameters?.body,
+    normalizedParameters?.description,
+    normalizedParameters?.value,
     normalizedParameters?.message,
     normalizedParameters?.summary,
     normalizedParameters?.details,
@@ -2059,6 +2147,14 @@ function looksLikeNoteTool(toolName) {
     normalized.includes("contact") ||
     normalized.includes("recette")
   );
+}
+
+function isSpotifyDeviceNotFoundError(error) {
+  const normalizedMessage = normalizeToolIdentifier(
+    error instanceof Error ? error.message : String(error || "")
+  );
+
+  return normalizedMessage.includes("devicenotfound");
 }
 
 function inferSidebarPanelFromText(text) {

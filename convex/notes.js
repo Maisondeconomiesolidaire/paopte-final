@@ -37,13 +37,14 @@ export const createForCurrent = mutation({
       throw new Error("Le contenu de la note est obligatoire.");
     }
 
-    const noteDate = args.noteDate ? parseDateValue(args.noteDate) : undefined;
+    const parsedNoteDate = parseOptionalDateValue(args.noteDate);
     const now = Date.now();
     const noteId = await ctx.db.insert("notes", {
       userId,
       content,
       noteType,
-      noteDate,
+      noteDate: parsedNoteDate.timestamp,
+      noteDateLabel: parsedNoteDate.label,
       createdAt: now,
       updatedAt: now,
     });
@@ -71,13 +72,21 @@ async function requireCurrentUserId(ctx) {
   return userId;
 }
 
-function parseDateValue(value) {
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) {
-    throw new Error("La date de la note est invalide.");
+function parseOptionalDateValue(value) {
+  if (typeof value !== "string" || !value.trim()) {
+    return { timestamp: undefined, label: undefined };
   }
 
-  return timestamp;
+  const normalizedValue = value.trim();
+  const timestamp = Date.parse(normalizedValue);
+  if (!Number.isFinite(timestamp)) {
+    return { timestamp: undefined, label: normalizedValue };
+  }
+
+  return {
+    timestamp,
+    label: normalizedValue,
+  };
 }
 
 function clampLimit(limit) {
@@ -95,6 +104,7 @@ function formatNote(note) {
     content: note.content,
     noteType: note.noteType,
     noteDate: note.noteDate ?? null,
+    noteDateLabel: note.noteDateLabel ?? "",
     createdAt: note.createdAt,
     updatedAt: note.updatedAt,
   };
