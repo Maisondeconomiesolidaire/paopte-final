@@ -47,14 +47,16 @@ export function LocalWeatherPanel({ profile, compact = false }) {
         const data = await response.json();
 
         if (!response.ok) {
-          throw new Error(data.error || "Impossible de recuperer la meteo.");
+          throw new Error(data.error || "Impossible de récupérer la météo.");
         }
 
         setWeather(data);
       } catch (loadError) {
         if (loadError.name !== "AbortError") {
           setWeather(null);
-          setError(loadError instanceof Error ? loadError.message : "Impossible de recuperer la meteo.");
+          setError(
+            loadError instanceof Error ? loadError.message : "Impossible de récupérer la météo."
+          );
         }
       } finally {
         setIsLoading(false);
@@ -75,14 +77,14 @@ export function LocalWeatherPanel({ profile, compact = false }) {
       <CardHeader className="border-b border-[#007f70]/10">
         <CardTitle className="text-xl text-[#123d38]">Meteo locale</CardTitle>
         <CardDescription>
-          {profile?.addressLabel || profile?.city || "Ajoutez votre adresse pour activer la meteo."}
+          {profile?.addressLabel || profile?.city || "Ajoutez votre adresse pour activer la météo."}
         </CardDescription>
       </CardHeader>
       <CardContent className={`flex flex-col ${compact ? "gap-4 p-5" : "h-full justify-between p-6"}`}>
         {isLoading ? (
           <div className="flex min-h-40 items-center gap-3 rounded-3xl bg-[#f4fbf9] px-5 text-sm text-[#5a7d77]">
             <LoaderCircle className="size-5 animate-spin text-[#007f70]" />
-            Recuperation des conditions actuelles...
+            Récupération des conditions actuelles...
           </div>
         ) : error ? (
           <div className="rounded-3xl border border-red-200/70 bg-red-50 px-4 py-4 text-sm text-red-700">
@@ -90,7 +92,7 @@ export function LocalWeatherPanel({ profile, compact = false }) {
           </div>
         ) : !weather ? (
           <div className="rounded-3xl border border-dashed border-[#007f70]/15 bg-[#f4fbf9] px-5 py-6 text-sm leading-6 text-[#557872]">
-            Papote affichera la meteo locale ici des que le profil contient une latitude et une longitude.
+            Papote affichera la météo locale ici dès que le profil contient une latitude et une longitude.
           </div>
         ) : (
           <>

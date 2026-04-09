@@ -33,7 +33,7 @@ export const upsertCurrent = mutation({
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
-      throw new Error("Utilisateur non authentifie.");
+      throw new Error("Utilisateur non authentifié.");
     }
 
     const existing = await ctx.db

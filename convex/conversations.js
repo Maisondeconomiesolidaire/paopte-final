@@ -47,11 +47,11 @@ export const start = mutation({
   handler: async (ctx, args) => {
     const profile = await getCurrentProfile(ctx);
     if (!profile) {
-      throw new Error("Utilisateur non authentifie.");
+      throw new Error("Utilisateur non authentifié.");
     }
 
     if (profile.isTrialExhausted) {
-      throw new Error("Vous avez utilise tous vos credits, merci pour votre essai.");
+      throw new Error("Vous avez utilisé tous vos crédits, merci pour votre essai.");
     }
 
     const existing = await ctx.db
@@ -90,7 +90,7 @@ export const appendMessage = mutation({
   handler: async (ctx, args) => {
     const profile = await getCurrentProfile(ctx);
     if (!profile) {
-      throw new Error("Utilisateur non authentifie.");
+      throw new Error("Utilisateur non authentifié.");
     }
 
     const conversation = await ctx.db
@@ -126,7 +126,7 @@ export const end = mutation({
   handler: async (ctx, args) => {
     const profile = await getCurrentProfile(ctx);
     if (!profile) {
-      throw new Error("Utilisateur non authentifie.");
+      throw new Error("Utilisateur non authentifié.");
     }
 
     const conversation = await ctx.db
@@ -197,7 +197,7 @@ function getConversationEstimatedCostCredits(conversation) {
 
 function buildSummary(transcript) {
   if (!transcript.length) {
-    return "Conversation demarree sans message enregistre.";
+    return "Conversation démarrée sans message enregistré.";
   }
 
   return transcript

@@ -29,7 +29,7 @@ export async function GET(request) {
 
     if (!response.ok) {
       return NextResponse.json(
-        { error: "Impossible de recuperer la meteo." },
+        { error: "Impossible de récupérer la météo." },
         { status: response.status }
       );
     }
@@ -54,7 +54,7 @@ export async function GET(request) {
     });
   } catch {
     return NextResponse.json(
-      { error: "Service meteo indisponible." },
+      { error: "Service météo indisponible." },
       { status: 500 }
     );
   }
@@ -62,11 +62,11 @@ export async function GET(request) {
 
 function getWeatherCondition(code) {
   if (code === 0) {
-    return { key: "clear", label: "Ciel degage" };
+    return { key: "clear", label: "Ciel dégagé" };
   }
 
   if ([1, 2].includes(code)) {
-    return { key: "partly-cloudy", label: "Eclaircies" };
+    return { key: "partly-cloudy", label: "Éclaircies" };
   }
 
   if (code === 3) {

@@ -33,7 +33,7 @@ export async function POST(request) {
       const signedUrlError = await signedUrlResponse.text();
       return NextResponse.json(
         {
-          error: "Impossible de creer une session ElevenLabs.",
+          error: "Impossible de créer une session ElevenLabs.",
           details: signedUrlError,
         },
         { status: signedUrlResponse.status }

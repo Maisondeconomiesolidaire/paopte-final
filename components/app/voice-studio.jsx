@@ -14,7 +14,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Orb } from "@/components/ui/orb";
 
 const AGENT_ID = process.env.NEXT_PUBLIC_ELEVENLABS_AGENT_ID || "";
-const TRIAL_EXHAUSTED_MESSAGE = "Vous avez utilise tous vos credits, merci pour votre essai.";
+const TRIAL_EXHAUSTED_MESSAGE = "Vous avez utilisé tous vos crédits, merci pour votre essai.";
 
 const formatter = new Intl.DateTimeFormat("fr-FR", {
   hour: "2-digit",
@@ -33,11 +33,27 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
   const appendConversationMessage = useMutation(api.conversations.appendMessage);
   const finishConversation = useMutation(api.conversations.end);
   const createCalendarEvent = useMutation(api.events.createForCurrent);
+  const calendarToolHandlers = {
+    createCalendarEvent: handleCreateCalendarEvent,
+    create_calendar_event: handleCreateCalendarEvent,
+    addCalendarEvent: handleCreateCalendarEvent,
+    add_calendar_event: handleCreateCalendarEvent,
+    createEvent: handleCreateCalendarEvent,
+    addEventToCalendar: handleCreateCalendarEvent,
+    ajouterEvenement: handleCreateCalendarEvent,
+    ajouter_evenement: handleCreateCalendarEvent,
+    ajouterEvenementCalendrier: handleCreateCalendarEvent,
+    ajouter_evenement_calendrier: handleCreateCalendarEvent,
+    ajouterRendezVous: handleCreateCalendarEvent,
+    ajouter_rendez_vous: handleCreateCalendarEvent,
+    ajouterRendezvous: handleCreateCalendarEvent,
+    ajouter_rendezvous: handleCreateCalendarEvent,
+  };
 
   async function handleCreateCalendarEvent(parameters) {
     const normalizedEvent = normalizeCalendarToolParameters(parameters);
     const createdEvent = await createCalendarEvent(normalizedEvent);
-    const confirmationMessage = `Rendez-vous ajoute: ${createdEvent.title} le ${formatEventDate(
+    const confirmationMessage = `Rendez-vous ajouté : ${createdEvent.title} le ${formatEventDate(
       createdEvent.startAt
     )}.`;
 
@@ -49,14 +65,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
   }
 
   const conversation = useConversation({
-    clientTools: {
-      createCalendarEvent: handleCreateCalendarEvent,
-      create_calendar_event: handleCreateCalendarEvent,
-      addCalendarEvent: handleCreateCalendarEvent,
-      add_calendar_event: handleCreateCalendarEvent,
-      createEvent: handleCreateCalendarEvent,
-      addEventToCalendar: handleCreateCalendarEvent,
-    },
+    clientTools: calendarToolHandlers,
     onConnect: () => {
       setRequestError("");
       setDisconnectReason("");
@@ -78,10 +87,16 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
       setIsConnecting(false);
       setRequestError(describeError(error));
     },
-    onUnhandledClientToolCall: (toolCall) => {
-      setRequestError(
-        `Outil client ElevenLabs introuvable: ${toolCall?.tool_name || "nom inconnu"}.`
-      );
+    onUnhandledClientToolCall: async (toolCall) => {
+      const toolName = extractToolName(toolCall);
+      const parameters = extractToolParameters(toolCall);
+
+      if (looksLikeCalendarTool(toolName)) {
+        return await handleCreateCalendarEvent(parameters);
+      }
+
+      setRequestError(`Outil client ElevenLabs introuvable : ${toolName || "nom inconnu"}.`);
+      return undefined;
     },
     onMessage: (message) => {
       const text = sanitizeVisibleText(extractText(message));
@@ -175,7 +190,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
       const data = await response.json();
 
       if (!response.ok || !data.signedUrl) {
-        throw new Error(data.error || "Impossible de recuperer une session de conversation.");
+        throw new Error(data.error || "Impossible de récupérer une session de conversation.");
       }
 
       setMessages([]);
@@ -197,6 +212,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
 
       activeConversationRef.current = startedConversationId;
       await createConversation({ externalId: startedConversationId });
+      setLocalCreatedEvents([]);
 
       conversation.sendContextualUpdate(
         buildProfileContext(profile, recentConversations, mergedUpcomingEvents, dateContext)
@@ -262,7 +278,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
                       <p className="mt-2 text-sm font-semibold text-[#173f3a]">{event.title}</p>
                       {Number.isFinite(event.endAt) ? (
                         <p className="mt-2 text-sm leading-6 text-[#5f7b76]">
-                          Jusqu&apos;a {formatEventTime(event.endAt)}
+                          Jusqu&apos;à {formatEventTime(event.endAt)}
                         </p>
                       ) : null}
                     </article>
@@ -335,17 +351,6 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
             </Button>
           </div>
 
-          <div className="mt-4 max-w-xl rounded-[28px] border border-white/80 bg-white/78 px-5 py-4 text-left shadow-[0_20px_60px_rgba(0,127,112,0.08)]">
-            <p className="text-xs uppercase tracking-[0.24em] text-[#7a8f8b]">Essai bêta</p>
-            <p className="mt-2 text-sm font-medium text-[#173f3a]">
-              {profile.trialDurationMinutes} minutes offertes a l&apos;inscription.
-            </p>
-            <p className="mt-2 text-sm leading-6 text-[#5a7772]">
-              Credits utilises: {formatCredits(profile.creditsUsed)} /{" "}
-              {formatCredits(profile.creditsOffered)}.
-            </p>
-          </div>
-
           {requestError ? (
             <div className="mt-4 max-w-xl rounded-2xl border border-red-300/50 bg-red-50 px-4 py-3 text-sm text-red-700 shadow-[0_12px_30px_rgba(239,68,68,0.08)]">
               {requestError}
@@ -406,7 +411,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
                             ? "Papote"
                             : message.role === "user"
                               ? "Vous"
-                              : "Systeme"}
+                              : "Système"}
                         </span>
                         <span>{message.timestamp}</span>
                       </div>
@@ -434,11 +439,11 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
             </CardHeader>
             <CardContent className="space-y-3 text-sm leading-6 text-[#4b6661]">
               <p>
-                Vous avez consomme {formatCredits(profile.creditsUsed)} credits sur{" "}
-                {formatCredits(profile.creditsOffered)} credits offerts.
+                Vous avez consommé {formatCredits(profile.creditsUsed)} crédits sur{" "}
+                {formatCredits(profile.creditsOffered)} crédits offerts.
               </p>
               <p>
-                Cette version est encore en beta, il n&apos;y a donc pas encore d&apos;abonnement
+                Cette version est encore en bêta, il n&apos;y a donc pas encore d&apos;abonnement
                 disponible pour continuer.
               </p>
             </CardContent>
@@ -450,7 +455,7 @@ export function VoiceStudio({ profile, recentConversations, upcomingEvents = [] 
 }
 
 function extractText(message) {
-  if (!message) return "Message vide recu.";
+  if (!message) return "Message vide reçu.";
   if (typeof message === "string") return message;
 
   if (typeof message.message === "string" && message.message.trim()) {
@@ -488,7 +493,7 @@ function extractRole(message) {
 
 function describeError(error) {
   if (error instanceof Error) {
-    return error.message || "Erreur inconnue au demarrage";
+    return error.message || "Erreur inconnue au démarrage";
   }
 
   if (
@@ -502,7 +507,7 @@ function describeError(error) {
   }
 
   if (typeof Event !== "undefined" && error instanceof Event) {
-    return `Erreur navigateur: ${error.type || "evenement inconnu"}`;
+    return `Erreur navigateur : ${error.type || "évènement inconnu"}`;
   }
 
   if (typeof error === "string" && error.trim()) {
@@ -510,7 +515,7 @@ function describeError(error) {
   }
 
   const serialized = safeSerialize(error);
-  return serialized === "{}" ? "Erreur inconnue au demarrage" : serialized;
+  return serialized === "{}" ? "Erreur inconnue au démarrage" : serialized;
 }
 
 function safeSerialize(value) {
@@ -523,7 +528,7 @@ function safeSerialize(value) {
 
 function describeDisconnect(details) {
   if (!details || typeof details !== "object") {
-    return "La session a ete fermee.";
+    return "La session a été fermée.";
   }
 
   const parts = [];
@@ -568,18 +573,18 @@ function buildProfileContext(profile, recentConversations, upcomingEvents, dateC
     `Date et heure actuelles : ${dateContext.promptValue}`,
     `Date ISO actuelle : ${dateContext.iso}`,
     `Fuseau horaire utilisateur : ${dateContext.timeZone}`,
-    `Prenom : ${profile.firstName}`,
+    `Prénom : ${profile.firstName}`,
     `Nom : ${profile.lastName}`,
     `Age : ${profile.age}`,
     `Ville : ${profile.city}`,
-    profile.addressLabel ? `Adresse selectionnee : ${profile.addressLabel}` : null,
+    profile.addressLabel ? `Adresse sélectionnée : ${profile.addressLabel}` : null,
     `Description personnelle : ${profile.bio}`,
     recentConversations.length
-      ? `Historique recent : ${buildConversationSummary(recentConversations)}`
-      : "Historique recent : aucune conversation precedente enregistree.",
-    `Evenements a venir : ${buildUpcomingEventsSummary(upcomingEvents)}`,
-    "Si l'utilisateur demande d'ajouter un rendez-vous ou un evenement a son calendrier, utilise l'outil client createCalendarEvent avec un titre et une date de debut precise.",
-    "Utilise ce contexte pour personnaliser tes reponses des le debut de l'appel.",
+      ? `Historique récent : ${buildConversationSummary(recentConversations)}`
+      : "Historique récent : aucune conversation précédente enregistrée.",
+    `Évènements à venir : ${buildUpcomingEventsSummary(upcomingEvents)}`,
+    "Si l'utilisateur demande d'ajouter un rendez-vous ou un évènement à son calendrier, utilise l'outil client createCalendarEvent avec un titre et une date de début précise.",
+    "Utilise ce contexte pour personnaliser tes réponses dès le début de l'appel.",
   ]
     .filter(Boolean)
     .join("\n");
@@ -587,13 +592,13 @@ function buildProfileContext(profile, recentConversations, upcomingEvents, dateC
 
 function buildConversationSummary(recentConversations) {
   if (!recentConversations?.length) {
-    return "Aucune conversation precedente.";
+    return "Aucune conversation précédente.";
   }
 
   return recentConversations
     .slice(0, 3)
     .map((conversation, index) => {
-      const summary = conversation.summary || "Conversation sans resume.";
+      const summary = conversation.summary || "Conversation sans résumé.";
       return `Conversation ${index + 1}: ${summary}`;
     })
     .join(" || ");
@@ -687,7 +692,7 @@ async function buildConversationDateContext(profile) {
     });
 
     if (!response.ok) {
-      throw new Error("Impossible de recuperer la date actuelle.");
+      throw new Error("Impossible de récupérer la date actuelle.");
     }
 
     const data = await response.json();
@@ -733,31 +738,43 @@ function sanitizeVisibleText(text) {
 }
 
 function normalizeCalendarToolParameters(parameters) {
+  const normalizedParameters = normalizeToolParameters(parameters);
   const title = firstNonEmptyString(
-    parameters?.title,
-    parameters?.eventTitle,
-    parameters?.name,
-    parameters?.summary
+    normalizedParameters?.title,
+    normalizedParameters?.eventTitle,
+    normalizedParameters?.event_name,
+    normalizedParameters?.name,
+    normalizedParameters?.summary,
+    normalizedParameters?.label
   );
   const startAt =
-    buildDateTimeFromParts(parameters) ||
+    buildDateTimeFromParts(normalizedParameters) ||
     firstNonEmptyString(
-      parameters?.startAt,
-      parameters?.startsAt,
-      parameters?.dueDate,
-      parameters?.date,
-      parameters?.datetime
+      normalizedParameters?.startAt,
+      normalizedParameters?.startsAt,
+      normalizedParameters?.start_date,
+      normalizedParameters?.dueDate,
+      normalizedParameters?.date,
+      normalizedParameters?.datetime,
+      normalizedParameters?.scheduledFor,
+      normalizedParameters?.scheduled_for,
+      normalizedParameters?.when
     );
   const endAt =
-    buildEndDateTimeFromParts(parameters) ||
-    firstNonEmptyString(parameters?.endAt, parameters?.endsAt, parameters?.endDate);
+    buildEndDateTimeFromParts(normalizedParameters) ||
+    firstNonEmptyString(
+      normalizedParameters?.endAt,
+      normalizedParameters?.endsAt,
+      normalizedParameters?.endDate,
+      normalizedParameters?.end_date
+    );
 
   if (!title) {
-    throw new Error("Le titre de l'evenement est manquant dans l'appel outil.");
+    throw new Error("Le titre de l'évènement est manquant dans l'appel outil.");
   }
 
   if (!startAt) {
-    throw new Error("La date de l'evenement est manquante dans l'appel outil.");
+    throw new Error("La date de l'évènement est manquante dans l'appel outil.");
   }
 
   return {
@@ -768,8 +785,17 @@ function normalizeCalendarToolParameters(parameters) {
 }
 
 function buildDateTimeFromParts(parameters) {
-  const date = firstNonEmptyString(parameters?.date, parameters?.dueDate);
-  const time = firstNonEmptyString(parameters?.time, parameters?.startTime);
+  const date = firstNonEmptyString(
+    parameters?.date,
+    parameters?.dueDate,
+    parameters?.startDate,
+    parameters?.start_date
+  );
+  const time = firstNonEmptyString(
+    parameters?.time,
+    parameters?.startTime,
+    parameters?.start_time
+  );
 
   if (!date) {
     return "";
@@ -780,8 +806,8 @@ function buildDateTimeFromParts(parameters) {
 }
 
 function buildEndDateTimeFromParts(parameters) {
-  const endDate = firstNonEmptyString(parameters?.endDate);
-  const endTime = firstNonEmptyString(parameters?.endTime);
+  const endDate = firstNonEmptyString(parameters?.endDate, parameters?.end_date);
+  const endTime = firstNonEmptyString(parameters?.endTime, parameters?.end_time);
 
   if (!endDate) {
     return "";
@@ -792,6 +818,10 @@ function buildEndDateTimeFromParts(parameters) {
 
 function firstNonEmptyString(...values) {
   for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return String(value);
+    }
+
     if (typeof value === "string" && value.trim()) {
       return value.trim();
     }
@@ -801,15 +831,67 @@ function firstNonEmptyString(...values) {
 }
 
 function normalizeToolDateValue(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const timestamp = value > 1e12 ? value : value * 1000;
+    return new Date(timestamp).toISOString();
+  }
+
   if (typeof value !== "string" || !value.trim()) {
     return "";
   }
 
   const trimmedValue = value.trim();
+  const normalizedFrenchDate = normalizeFrenchDateString(trimmedValue);
+  const unixValue = Number(trimmedValue);
+
+  if (Number.isFinite(unixValue)) {
+    const timestamp = unixValue > 1e12 ? unixValue : unixValue * 1000;
+    return new Date(timestamp).toISOString();
+  }
+
+  const slashDateMatch = normalizedFrenchDate.match(
+    /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/
+  );
+
+  if (slashDateMatch) {
+    const [, day, month, year, hour = "12", minute = "00", second = "00"] = slashDateMatch;
+    return new Date(
+      Number(year),
+      Number(month) - 1,
+      Number(day),
+      Number(hour),
+      Number(minute),
+      Number(second)
+    ).toISOString();
+  }
+
+  const dayFirstDateMatch = normalizedFrenchDate.match(
+    /^(\d{1,2})-(\d{1,2})-(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/
+  );
+
+  if (dayFirstDateMatch) {
+    const [, day, month, year, hour = "12", minute = "00", second = "00"] =
+      dayFirstDateMatch;
+    return new Date(
+      Number(year),
+      Number(month) - 1,
+      Number(day),
+      Number(hour),
+      Number(minute),
+      Number(second)
+    ).toISOString();
+  }
+
   const parsedDate = new Date(trimmedValue);
 
   if (!Number.isNaN(parsedDate.getTime())) {
     return parsedDate.toISOString();
+  }
+
+  const normalizedParsedDate = new Date(normalizedFrenchDate);
+
+  if (!Number.isNaN(normalizedParsedDate.getTime())) {
+    return normalizedParsedDate.toISOString();
   }
 
   return trimmedValue;
@@ -823,4 +905,95 @@ function mergeEvents(localEvents, remoteEvents) {
   });
 
   return Array.from(byId.values()).sort((left, right) => left.startAt - right.startAt);
+}
+
+function extractToolName(toolCall) {
+  return String(
+    toolCall?.tool_name ||
+      toolCall?.toolName ||
+      toolCall?.client_tool_call?.tool_name ||
+      toolCall?.clientToolCall?.toolName ||
+      ""
+  ).trim();
+}
+
+function extractToolParameters(toolCall) {
+  return normalizeToolParameters(
+    toolCall?.parameters ||
+    toolCall?.params ||
+    toolCall?.client_tool_call?.parameters ||
+    toolCall?.clientToolCall?.parameters ||
+    {}
+  );
+}
+
+function looksLikeCalendarTool(toolName) {
+  const normalized = normalizeToolIdentifier(toolName);
+
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    normalized.includes("calendar") ||
+    normalized.includes("event") ||
+    normalized.includes("evenement") ||
+    normalized.includes("rendezvous") ||
+    normalized.includes("agenda") ||
+    normalized.includes("rdv")
+  );
+}
+
+function normalizeToolIdentifier(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .toLowerCase();
+}
+
+function normalizeToolParameters(parameters) {
+  if (!parameters) {
+    return {};
+  }
+
+  if (typeof parameters === "string") {
+    try {
+      return normalizeToolParameters(JSON.parse(parameters));
+    } catch {
+      return { raw: parameters };
+    }
+  }
+
+  if (Array.isArray(parameters)) {
+    return {};
+  }
+
+  if (typeof parameters !== "object") {
+    return {};
+  }
+
+  const nestedParameters =
+    parameters.parameters ||
+    parameters.args ||
+    parameters.arguments ||
+    parameters.input ||
+    parameters.payload;
+
+  if (nestedParameters && nestedParameters !== parameters) {
+    return {
+      ...normalizeToolParameters(nestedParameters),
+      ...parameters,
+    };
+  }
+
+  return parameters;
+}
+
+function normalizeFrenchDateString(value) {
+  return value
+    .replace(/\s+a\s+/gi, " ")
+    .replace(/\s+à\s+/gi, " ")
+    .replace(/\b(\d{1,2})h(\d{2})\b/gi, "$1:$2")
+    .replace(/\b(\d{1,2})h\b/gi, "$1:00");
 }

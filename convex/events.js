@@ -37,14 +37,14 @@ export const createForCurrent = mutation({
     const title = args.title.trim();
 
     if (!title) {
-      throw new Error("Le motif de l'evenement est obligatoire.");
+      throw new Error("Le titre de l'évènement est obligatoire.");
     }
 
-    const startAt = parseDateValue(args.startAt, "date de debut");
+    const startAt = parseDateValue(args.startAt, "date de début");
     const endAt = args.endAt ? parseDateValue(args.endAt, "date de fin") : undefined;
 
     if (typeof endAt === "number" && endAt < startAt) {
-      throw new Error("La date de fin doit etre posterieure a la date de debut.");
+      throw new Error("La date de fin doit être postérieure à la date de début.");
     }
 
     const now = Date.now();
@@ -59,7 +59,7 @@ export const createForCurrent = mutation({
 
     const event = await ctx.db.get(eventId);
     if (!event) {
-      throw new Error("Impossible de recuperer l'evenement cree.");
+      throw new Error("Impossible de récupérer l'évènement créé.");
     }
 
     return formatEvent(event);
@@ -74,7 +74,7 @@ async function getCurrentUserId(ctx) {
 async function requireCurrentUserId(ctx) {
   const userId = await getCurrentUserId(ctx);
   if (!userId) {
-    throw new Error("Utilisateur non authentifie.");
+    throw new Error("Utilisateur non authentifié.");
   }
 
   return userId;

@@ -40,8 +40,8 @@ export function PapoteApp() {
   if (!isAuthenticated) {
     return (
       <CenteredState
-        title="Convex non connecte"
-        description="Votre session Clerk est active, mais Clerk ne fournit pas encore le jeton JWT 'convex'. Activez l'integration Convex ou creez le template JWT 'convex' dans le dashboard Clerk."
+        title="Convex non connecté"
+        description="Votre session Clerk est active, mais Clerk ne fournit pas encore le jeton JWT 'convex'. Activez l'intégration Convex ou créez le template JWT 'convex' dans le dashboard Clerk."
       />
     );
   }
@@ -55,7 +55,7 @@ function PapoteAuthenticated() {
   const upcomingEvents = useQuery(api.events.upcomingForCurrent, { limit: 8 });
 
   if (profile === undefined || recentConversations === undefined || upcomingEvents === undefined) {
-    return <CenteredState title="Chargement" description="Recuperation de votre profil..." />;
+    return <CenteredState title="Connexion en cours" description="Connexion en cours..." />;
   }
 
   if (!profile || !profile.onboardingCompleted) {
@@ -147,7 +147,7 @@ function OnboardingForm({ existingProfile }) {
 
     const age = Number(form.age);
     if (!Number.isFinite(age) || age < 1 || age > 120) {
-      setError("Merci d'indiquer un age valide.");
+      setError("Merci d'indiquer un âge valide.");
       return;
     }
 
@@ -165,7 +165,9 @@ function OnboardingForm({ existingProfile }) {
         longitude: typeof form.longitude === "number" ? form.longitude : undefined,
       });
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Impossible d'enregistrer votre profil.");
+      setError(
+        saveError instanceof Error ? saveError.message : "Impossible d'enregistrer votre profil."
+      );
     } finally {
       setIsSaving(false);
     }
@@ -193,32 +195,32 @@ function OnboardingForm({ existingProfile }) {
           <div className="absolute inset-x-8 top-0 h-px bg-[linear-gradient(90deg,transparent,rgba(0,127,112,0.28),transparent)]" />
           <div className="inline-flex items-center gap-2 rounded-full border border-[#007f70]/10 bg-white/80 px-4 py-2 text-xs font-medium uppercase tracking-[0.24em] text-[#5f7b76]">
             <Sparkles className="size-3.5 text-[#007f70]" />
-            Premiere mise en place
+            Première mise en place
           </div>
 
           <h1 className="mt-6 max-w-md text-4xl font-semibold tracking-[-0.04em] text-[#113d38] sm:text-5xl">
             Bienvenue sur Papote
           </h1>
           <p className="mt-4 max-w-lg text-base leading-7 text-[#55736e]">
-            Quelques details suffisent pour personnaliser la conversation, situer vos rendez-vous
-            et demarrer avec un profil propre des le premier appel.
+            Quelques détails suffisent pour personnaliser la conversation, situer vos rendez-vous
+            et démarrer avec un profil propre dès le premier appel.
           </p>
 
           <div className="mt-8 grid gap-4">
             <Feature
               icon={Check}
-              title="Profil personnalise"
-              description="Papote adapte sa conversation a votre identite, votre rythme et vos habitudes."
+              title="Profil personnalisé"
+              description="Papote adapte sa conversation à votre identité, votre rythme et vos habitudes."
             />
             <Feature
               icon={MapPin}
               title="Adresse utile"
-              description="Votre localisation permet d&apos;afficher la meteo locale et de raisonner sur les rendez-vous."
+              description="Votre localisation permet d&apos;afficher la météo locale et de raisonner sur les rendez-vous."
             />
             <Feature
               icon={Clock3}
-              title="Essai beta inclus"
-              description="15 minutes de conversation offertes a l&apos;inscription pour tester librement l&apos;agent."
+              title="Essai bêta inclus"
+              description="15 minutes de conversation offertes à l&apos;inscription pour tester librement l&apos;agent."
             />
           </div>
         </section>
@@ -227,8 +229,8 @@ function OnboardingForm({ existingProfile }) {
           <CardHeader className="border-b border-[#007f70]/10 pb-5">
             <CardTitle className="text-3xl text-[#113d38]">Votre profil</CardTitle>
             <CardDescription className="max-w-xl text-sm leading-6 text-[#64807b]">
-              Renseignez les informations essentielles pour que Papote comprenne qui vous etes et
-              puisse vous aider a organiser la suite.
+              Renseignez les informations essentielles pour que Papote comprenne qui vous êtes et
+              puisse vous aider à organiser la suite.
             </CardDescription>
           </CardHeader>
           <CardContent className="pt-6">
@@ -242,7 +244,7 @@ function OnboardingForm({ existingProfile }) {
                     placeholder="Dupont"
                   />
                 </Field>
-                <Field label="Prenom">
+                <Field label="Prénom">
                   <Input
                     className={inputClassName}
                     value={form.firstName}
@@ -275,7 +277,7 @@ function OnboardingForm({ existingProfile }) {
                         updateField("city", event.target.value);
                         updateField("addressLabel", event.target.value);
                       }}
-                      placeholder="Commencez a taper votre ville ou votre adresse..."
+                      placeholder="Commencez à taper votre ville ou votre adresse..."
                     />
                     {(loadingSuggestions || suggestions.length > 0) && (
                       <div className="absolute left-0 right-0 top-[calc(100%+0.65rem)] z-20 rounded-[26px] border border-[#d7e8e3] bg-white/98 p-2 shadow-[0_30px_90px_rgba(0,127,112,0.12)]">
@@ -307,7 +309,7 @@ function OnboardingForm({ existingProfile }) {
                   </div>
                   {selectedAddressPreview ? (
                     <p className="mt-2 text-xs text-[#6a8480]">
-                      Selection actuelle: {selectedAddressPreview}
+                      Sélection actuelle : {selectedAddressPreview}
                     </p>
                   ) : null}
                 </Field>
@@ -319,7 +321,7 @@ function OnboardingForm({ existingProfile }) {
                   value={form.bio}
                   onChange={(event) => updateField("bio", event.target.value)}
                   rows={6}
-                  placeholder="Vos hobbies, votre personnalite, ce que vous aimez, ce qui vous aide a vous sentir bien..."
+                  placeholder="Vos hobbies, votre personnalité, ce que vous aimez, ce qui vous aide à vous sentir bien..."
                 />
               </Field>
 
@@ -331,7 +333,7 @@ function OnboardingForm({ existingProfile }) {
 
               <div className="flex flex-col gap-3 border-t border-[#007f70]/10 pt-5 sm:flex-row sm:items-center sm:justify-between">
                 <p className="text-sm leading-6 text-[#64807b]">
-                  Votre profil pourra etre mis a jour plus tard sans perdre votre historique.
+                  Votre profil pourra être mis à jour plus tard sans perdre votre historique.
                 </p>
                 <Button type="submit" size="lg" className="rounded-full px-7" disabled={isSaving}>
                   {isSaving ? "Enregistrement..." : "Continuer vers Papote"}
