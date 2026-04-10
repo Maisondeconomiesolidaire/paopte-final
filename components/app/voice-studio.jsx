@@ -39,9 +39,10 @@ import {
 const AGENT_ID = process.env.NEXT_PUBLIC_ELEVENLABS_AGENT_ID || "";
 const TRIAL_EXHAUSTED_MESSAGE = "Vous avez utilisé tous vos crédits, merci pour votre essai.";
 const SPOTIFY_NORMAL_VOLUME = 0.9;
-const SPOTIFY_DUCKED_VOLUME = 0.18;
-const USER_VAD_ACTIVE_THRESHOLD = 0.55;
-const USER_VAD_RELEASE_DELAY_MS = 900;
+const SPOTIFY_AGENT_DUCKED_VOLUME = 0.18;
+const SPOTIFY_USER_DUCKED_VOLUME = 0.06;
+const USER_VAD_ACTIVE_THRESHOLD = 0.18;
+const USER_VAD_RELEASE_DELAY_MS = 1400;
 
 const formatter = new Intl.DateTimeFormat("fr-FR", {
   hour: "2-digit",
@@ -256,6 +257,17 @@ export function VoiceStudio({
       clearTimeout(userSpeechReleaseTimeoutRef.current);
     }
 
+    userSpeechReleaseTimeoutRef.current = setTimeout(() => {
+      setIsUserSpeaking(false);
+    }, USER_VAD_RELEASE_DELAY_MS);
+  }
+
+  function markUserSpeaking() {
+    if (userSpeechReleaseTimeoutRef.current) {
+      clearTimeout(userSpeechReleaseTimeoutRef.current);
+    }
+
+    setIsUserSpeaking(true);
     userSpeechReleaseTimeoutRef.current = setTimeout(() => {
       setIsUserSpeaking(false);
     }, USER_VAD_RELEASE_DELAY_MS);
@@ -757,6 +769,14 @@ export function VoiceStudio({
       setRequestError(describeError(error));
     },
     onVadScore: handleVadScore,
+    onInterruption: () => {
+      markUserSpeaking();
+    },
+    onModeChange: (mode) => {
+      if (mode === "speaking") {
+        setIsUserSpeaking(false);
+      }
+    },
     onUnhandledClientToolCall: async (toolCall) => {
       const toolName = extractToolName(toolCall);
       const parameters = extractToolParameters(toolCall);
@@ -805,6 +825,10 @@ export function VoiceStudio({
         setActiveSidebarPanel(sidebarPanel);
       }
 
+      if (role === "user") {
+        markUserSpeaking();
+      }
+
       setMessages((current) => [
         ...current,
         {
@@ -842,7 +866,11 @@ export function VoiceStudio({
   const remainingSeconds = profile.creditsPerSecond
     ? Math.max(0, Math.floor(profile.creditsRemaining / profile.creditsPerSecond))
     : 0;
-  const shouldDuckSpotifyVolume = isSpeaking || isUserSpeaking;
+  const targetSpotifyVolume = isUserSpeaking
+    ? SPOTIFY_USER_DUCKED_VOLUME
+    : isSpeaking
+      ? SPOTIFY_AGENT_DUCKED_VOLUME
+      : SPOTIFY_NORMAL_VOLUME;
 
   const statusLabel = useMemo(() => {
     if (trialIsExhausted) {
@@ -878,10 +906,8 @@ export function VoiceStudio({
       return;
     }
 
-    void setSpotifyPlaybackVolume(
-      shouldDuckSpotifyVolume ? SPOTIFY_DUCKED_VOLUME : SPOTIFY_NORMAL_VOLUME
-    );
-  }, [spotifySession?.accessToken, isSpotifyReady, shouldDuckSpotifyVolume]);
+    void setSpotifyPlaybackVolume(targetSpotifyVolume);
+  }, [spotifySession?.accessToken, isSpotifyReady, targetSpotifyVolume]);
 
   useEffect(() => {
     return () => {
