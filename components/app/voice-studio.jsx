@@ -42,10 +42,13 @@ const TRIAL_EXHAUSTED_MESSAGE = "Vous avez utilisé tous vos crédits, merci pou
 const SPOTIFY_NORMAL_VOLUME = 0.9;
 const SPOTIFY_AGENT_DUCKED_VOLUME = 0.18;
 const SPOTIFY_USER_DUCKED_VOLUME = 0.06;
-const USER_VAD_ACTIVE_THRESHOLD = 0.18;
-const USER_INPUT_VOLUME_ACTIVE_THRESHOLD = 0.12;
+const USER_VAD_ACTIVE_THRESHOLD = 0.34;
+const USER_VAD_RELEASE_THRESHOLD = 0.14;
+const USER_INPUT_VOLUME_ACTIVE_THRESHOLD = 0.22;
+const USER_INPUT_VOLUME_RELEASE_THRESHOLD = 0.09;
 const USER_INPUT_VOLUME_POLL_MS = 120;
-const USER_VAD_RELEASE_DELAY_MS = 1400;
+const USER_VAD_RELEASE_DELAY_MS = 320;
+const USER_INPUT_LOW_STREAK_TO_RELEASE = 3;
 
 const formatter = new Intl.DateTimeFormat("fr-FR", {
   hour: "2-digit",
@@ -98,6 +101,9 @@ export function VoiceStudio({
     agenda: 0,
     music: 0,
     notes: 0,
+  });
+  const userInputLevelStateRef = useRef({
+    lowStreak: 0,
   });
   const transcriptContainerRef = useRef(null);
   const userSpeechReleaseTimeoutRef = useRef(null);
@@ -264,32 +270,36 @@ export function VoiceStudio({
     }
 
     if (score >= USER_VAD_ACTIVE_THRESHOLD) {
-      if (userSpeechReleaseTimeoutRef.current) {
-        clearTimeout(userSpeechReleaseTimeoutRef.current);
-      }
-
-      setIsUserSpeaking(true);
+      activateUserSpeaking();
       return;
     }
 
-    if (userSpeechReleaseTimeoutRef.current) {
-      clearTimeout(userSpeechReleaseTimeoutRef.current);
+    if (score <= USER_VAD_RELEASE_THRESHOLD) {
+      scheduleUserSpeakingRelease();
     }
-
-    userSpeechReleaseTimeoutRef.current = setTimeout(() => {
-      setIsUserSpeaking(false);
-    }, USER_VAD_RELEASE_DELAY_MS);
   }
 
   function markUserSpeaking() {
+    activateUserSpeaking();
+    scheduleUserSpeakingRelease();
+  }
+
+  function activateUserSpeaking() {
     if (userSpeechReleaseTimeoutRef.current) {
       clearTimeout(userSpeechReleaseTimeoutRef.current);
     }
 
     setIsUserSpeaking(true);
+  }
+
+  function scheduleUserSpeakingRelease(delayMs = USER_VAD_RELEASE_DELAY_MS) {
+    if (userSpeechReleaseTimeoutRef.current) {
+      clearTimeout(userSpeechReleaseTimeoutRef.current);
+    }
+
     userSpeechReleaseTimeoutRef.current = setTimeout(() => {
       setIsUserSpeaking(false);
-    }, USER_VAD_RELEASE_DELAY_MS);
+    }, delayMs);
   }
 
   async function playSpotifySong(parameters) {
@@ -906,10 +916,6 @@ export function VoiceStudio({
         setActiveSidebarPanel(sidebarPanel);
       }
 
-      if (role === "user") {
-        markUserSpeaking();
-      }
-
       setMessages((current) => [
         ...current,
         {
@@ -952,9 +958,7 @@ export function VoiceStudio({
     []
   );
   const spotifyConnected = Boolean(spotifySession?.accessToken && spotifyAccount);
-  const remainingSeconds = profile.creditsPerSecond
-    ? Math.max(0, Math.floor(profile.creditsRemaining / profile.creditsPerSecond))
-    : 0;
+  const remainingCredits = Math.max(0, profile.creditsRemaining || 0);
   const targetSpotifyVolume = isUserSpeaking
     ? SPOTIFY_USER_DUCKED_VOLUME
     : isSpeaking
@@ -1063,6 +1067,7 @@ export function VoiceStudio({
 
   useEffect(() => {
     if (status !== "connected") {
+      userInputLevelStateRef.current.lowStreak = 0;
       return;
     }
 
@@ -1080,8 +1085,20 @@ export function VoiceStudio({
           }
 
           if (inputVolume >= USER_INPUT_VOLUME_ACTIVE_THRESHOLD) {
-            markUserSpeaking();
+            userInputLevelStateRef.current.lowStreak = 0;
+            activateUserSpeaking();
+            return;
           }
+
+          if (inputVolume <= USER_INPUT_VOLUME_RELEASE_THRESHOLD) {
+            userInputLevelStateRef.current.lowStreak += 1;
+            if (userInputLevelStateRef.current.lowStreak >= USER_INPUT_LOW_STREAK_TO_RELEASE) {
+              scheduleUserSpeakingRelease(180);
+            }
+            return;
+          }
+
+          userInputLevelStateRef.current.lowStreak = 0;
         })
         .catch(() => {
           // Ignore transient meter failures; the next poll will retry.
@@ -1610,7 +1627,7 @@ export function VoiceStudio({
               <Clock3 className="size-4" />
               {trialIsExhausted
                 ? "Essai bêta terminé"
-                : `${formatDuration(remainingSeconds)} restantes`}
+                : `${formatCredits(remainingCredits)} crédits restants`}
             </Badge>
           </div>
 
