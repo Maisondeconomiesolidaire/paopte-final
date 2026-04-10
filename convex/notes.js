@@ -58,6 +58,37 @@ export const createForCurrent = mutation({
   },
 });
 
+export const findForCurrent = query({
+  args: {
+    content: v.optional(v.string()),
+    query: v.optional(v.string()),
+    noteType: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) {
+      return null;
+    }
+
+    const queryText = (args.query?.trim() || args.content?.trim() || "").trim();
+    const normalizedQuery = normalizeSearchText(queryText);
+    const normalizedType = normalizeSearchText(args.noteType?.trim() || "");
+
+    if (!normalizedQuery) {
+      return null;
+    }
+
+    const notes = await ctx.db
+      .query("notes")
+      .withIndex("by_user_createdAt", (q) => q.eq("userId", userId))
+      .order("desc")
+      .take(200);
+
+    const match = findBestNoteMatch(notes, normalizedQuery, normalizedType);
+    return match ? formatNote(match) : null;
+  },
+});
+
 export const deleteForCurrent = mutation({
   args: {
     noteId: v.optional(v.id("notes")),

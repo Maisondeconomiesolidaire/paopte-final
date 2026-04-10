@@ -66,6 +66,37 @@ export const createForCurrent = mutation({
   },
 });
 
+export const findForCurrent = query({
+  args: {
+    title: v.optional(v.string()),
+    query: v.optional(v.string()),
+    startAt: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) {
+      return null;
+    }
+
+    const queryText = (args.query?.trim() || args.title?.trim() || "").trim();
+    const normalizedQuery = normalizeSearchText(queryText);
+    const requestedTimestamp = args.startAt ? tryParseDateValue(args.startAt) : null;
+
+    if (!normalizedQuery) {
+      return null;
+    }
+
+    const events = await ctx.db
+      .query("events")
+      .withIndex("by_user_startAt", (q) => q.eq("userId", userId))
+      .order("asc")
+      .take(200);
+
+    const match = findBestEventMatch(events, normalizedQuery, requestedTimestamp);
+    return match ? formatEvent(match) : null;
+  },
+});
+
 export const consumeTodayRemindersForCurrent = mutation({
   args: {
     dayStart: v.string(),

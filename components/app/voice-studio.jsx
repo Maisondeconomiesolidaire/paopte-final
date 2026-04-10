@@ -14,10 +14,11 @@ import {
   Music4,
   PauseCircle,
   ShieldAlert,
+  X,
 } from "lucide-react";
 import Image from "next/image";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useMutation } from "convex/react";
+import { useConvex, useMutation } from "convex/react";
 
 import { api } from "@/convex/_generated/api";
 import { Badge } from "@/components/ui/badge";
@@ -79,9 +80,25 @@ export function VoiceStudio({
   const [isSpotifyReady, setIsSpotifyReady] = useState(false);
   const [isUserSpeaking, setIsUserSpeaking] = useState(false);
   const [activeSidebarPanel, setActiveSidebarPanel] = useState(null);
+  const [revealedSidebarPanels, setRevealedSidebarPanels] = useState({
+    agenda: false,
+    music: false,
+    notes: false,
+  });
+  const [focusedSurface, setFocusedSurface] = useState(null);
+  const convex = useConvex();
   const activeConversationRef = useRef(null);
   const spotifyPlayerRef = useRef(null);
   const spotifySdkPromiseRef = useRef(null);
+  const sidebarScrollContainerRef = useRef(null);
+  const agendaCardRef = useRef(null);
+  const musicCardRef = useRef(null);
+  const notesCardRef = useRef(null);
+  const sidebarPanelRatiosRef = useRef({
+    agenda: 0,
+    music: 0,
+    notes: 0,
+  });
   const transcriptContainerRef = useRef(null);
   const userSpeechReleaseTimeoutRef = useRef(null);
   const createConversation = useMutation(api.conversations.start);
@@ -417,6 +434,46 @@ export function VoiceStudio({
     return confirmationMessage;
   }
 
+  function openEventFocus(event) {
+    setFocusedSurface({ type: "event", item: event });
+    setActiveSidebarPanel("agenda");
+  }
+
+  function openNoteFocus(note) {
+    setFocusedSurface({ type: "note", item: note });
+    setActiveSidebarPanel("notes");
+  }
+
+  async function handleOpenCalendarEvent(parameters) {
+    const normalizedEvent = normalizeDeleteCalendarToolParameters(parameters, sessionTimeZone);
+    const openedEvent = await convex.query(api.events.findForCurrent, normalizedEvent);
+
+    if (!openedEvent) {
+      throw new Error("Aucun évènement correspondant n'a été trouvé à ouvrir.");
+    }
+
+    openEventFocus(openedEvent);
+    const confirmationMessage = `Évènement ouvert : ${openedEvent.title}.`;
+    setToolNotice(confirmationMessage);
+    setRequestError("");
+    return confirmationMessage;
+  }
+
+  async function handleOpenNote(parameters) {
+    const normalizedNote = normalizeDeleteNoteToolParameters(parameters);
+    const openedNote = await convex.query(api.notes.findForCurrent, normalizedNote);
+
+    if (!openedNote) {
+      throw new Error("Aucune note correspondante n'a été trouvée à ouvrir.");
+    }
+
+    openNoteFocus(openedNote);
+    const confirmationMessage = `Note ouverte : ${truncateText(openedNote.content, 72)}.`;
+    setToolNotice(confirmationMessage);
+    setRequestError("");
+    return confirmationMessage;
+  }
+
   async function handleDeleteCalendarEvent(parameters) {
     const normalizedEvent = normalizeDeleteCalendarToolParameters(parameters, sessionTimeZone);
     const deletedEvent = await deleteCalendarEvent(normalizedEvent);
@@ -462,6 +519,12 @@ export function VoiceStudio({
     ajouter_rendez_vous: handleCreateCalendarEvent,
     ajouterRendezvous: handleCreateCalendarEvent,
     ajouter_rendezvous: handleCreateCalendarEvent,
+    openCalendarEvent: handleOpenCalendarEvent,
+    open_calendar_event: handleOpenCalendarEvent,
+    focusCalendarEvent: handleOpenCalendarEvent,
+    focus_calendar_event: handleOpenCalendarEvent,
+    ouvrirEvenement: handleOpenCalendarEvent,
+    ouvrir_evenement: handleOpenCalendarEvent,
     deleteCalendarEvent: handleDeleteCalendarEvent,
     delete_calendar_event: handleDeleteCalendarEvent,
     removeCalendarEvent: handleDeleteCalendarEvent,
@@ -496,6 +559,12 @@ export function VoiceStudio({
     save_note: handleCreateNote,
     noterQuelqueChose: handleCreateNote,
     noter_quelque_chose: handleCreateNote,
+    openNote: handleOpenNote,
+    open_note: handleOpenNote,
+    focusNote: handleOpenNote,
+    focus_note: handleOpenNote,
+    ouvrirNote: handleOpenNote,
+    ouvrir_note: handleOpenNote,
     deleteNote: handleDeleteNote,
     delete_note: handleDeleteNote,
     removeNote: handleDeleteNote,
@@ -782,7 +851,16 @@ export function VoiceStudio({
     onUnhandledClientToolCall: async (toolCall) => {
       const toolName = extractToolName(toolCall);
       const parameters = extractToolParameters(toolCall);
-      const normalizedToolName = normalizeToolIdentifier(toolName);
+
+      if (looksLikeOpenTool(toolName)) {
+        if (looksLikeNoteTool(toolName)) {
+          return await handleOpenNote(parameters);
+        }
+
+        if (looksLikeCalendarTool(toolName)) {
+          return await handleOpenCalendarEvent(parameters);
+        }
+      }
 
       if (looksLikeDeleteTool(toolName)) {
         if (looksLikeNoteTool(toolName)) {
@@ -799,6 +877,7 @@ export function VoiceStudio({
       }
 
       if (looksLikeSpotifyTool(toolName)) {
+        const normalizedToolName = normalizeToolIdentifier(toolName);
         if (normalizedToolName.includes("pause")) {
           return await pauseSpotifyPlayback();
         }
@@ -864,6 +943,14 @@ export function VoiceStudio({
     () => mergeNotes(localCreatedNotes, recentNotes),
     [localCreatedNotes, recentNotes]
   );
+  const sidebarPanelRefs = useMemo(
+    () => ({
+      agenda: agendaCardRef,
+      music: musicCardRef,
+      notes: notesCardRef,
+    }),
+    []
+  );
   const spotifyConnected = Boolean(spotifySession?.accessToken && spotifyAccount);
   const remainingSeconds = profile.creditsPerSecond
     ? Math.max(0, Math.floor(profile.creditsRemaining / profile.creditsPerSecond))
@@ -910,6 +997,69 @@ export function VoiceStudio({
 
     void setSpotifyPlaybackVolume(targetSpotifyVolume);
   }, [spotifySession?.accessToken, isSpotifyReady, targetSpotifyVolume]);
+
+  useEffect(() => {
+    const root = sidebarScrollContainerRef.current;
+    const cards = Object.entries(sidebarPanelRefs)
+      .map(([panel, ref]) => ({ panel, element: ref.current }))
+      .filter((entry) => entry.element);
+
+    if (!root || cards.length === 0) {
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          const panel = entry.target.getAttribute("data-panel");
+          if (!panel) {
+            continue;
+          }
+
+          sidebarPanelRatiosRef.current[panel] = entry.intersectionRatio;
+          if (entry.isIntersecting) {
+            setRevealedSidebarPanels((current) =>
+              current[panel] ? current : { ...current, [panel]: true }
+            );
+          }
+        }
+
+        const topPanel = Object.entries(sidebarPanelRatiosRef.current).sort(
+          (left, right) => right[1] - left[1]
+        )[0];
+
+        if (topPanel?.[0] && topPanel[1] >= 0.55) {
+          setActiveSidebarPanel((current) => (current === topPanel[0] ? current : topPanel[0]));
+        }
+      },
+      {
+        root,
+        threshold: [0.2, 0.4, 0.55, 0.75, 0.95],
+      }
+    );
+
+    cards.forEach(({ element }) => observer.observe(element));
+    return () => {
+      observer.disconnect();
+    };
+  }, [sidebarPanelRefs]);
+
+  useEffect(() => {
+    if (!activeSidebarPanel) {
+      return;
+    }
+
+    const card = sidebarPanelRefs[activeSidebarPanel]?.current;
+    const root = sidebarScrollContainerRef.current;
+    if (!card || !root) {
+      return;
+    }
+
+    card.scrollIntoView({
+      behavior: "smooth",
+      block: "nearest",
+    });
+  }, [activeSidebarPanel, sidebarPanelRefs]);
 
   useEffect(() => {
     if (status !== "connected") {
@@ -1074,106 +1224,145 @@ export function VoiceStudio({
     await conversation.endSession();
   }
 
+  const isAgendaPanelActive = activeSidebarPanel === "agenda";
+  const isMusicPanelActive = activeSidebarPanel === "music";
+  const isNotesPanelActive = activeSidebarPanel === "notes";
+
   return (
     <main className="relative h-[100svh] overflow-hidden bg-[radial-gradient(circle_at_top_left,rgba(184,126,177,0.18),transparent_28%),radial-gradient(circle_at_82%_18%,rgba(0,127,112,0.16),transparent_24%),linear-gradient(180deg,#fffefd_0%,#f4fbf9_48%,#f7eef7_100%)] text-[#0d3d38]">
       <div className="mx-auto grid h-full w-full max-w-7xl gap-6 px-6 py-4 sm:px-8 sm:py-6 lg:grid-cols-[320px_minmax(0,1fr)] lg:px-10 xl:grid-cols-[320px_minmax(0,1fr)_380px]">
-        <aside className="hidden h-full min-h-0 lg:flex lg:flex-col lg:gap-6">
-          <Card className="flex min-h-0 flex-1 flex-col border border-white/80 bg-white/76 shadow-[0_24px_80px_rgba(0,127,112,0.08)] backdrop-blur-xl">
-            <CardHeader className="border-b border-[#007f70]/10">
+        <aside className="hidden h-full min-h-0 lg:flex">
+          <div
+            ref={sidebarScrollContainerRef}
+            className="flex min-h-0 flex-1 snap-y snap-mandatory flex-col gap-4 overflow-y-auto pr-2 [scrollbar-width:none]"
+          >
+            <section
+              ref={agendaCardRef}
+              data-panel="agenda"
+              className={`snap-start rounded-[32px] border border-white/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.88),rgba(244,251,249,0.84))] shadow-[0_24px_80px_rgba(0,127,112,0.08)] backdrop-blur-xl transition-all duration-700 ${
+                revealedSidebarPanels.agenda
+                  ? "translate-y-0 opacity-100"
+                  : "translate-y-8 opacity-0"
+              } ${isAgendaPanelActive ? "scale-[1.01] shadow-[0_30px_90px_rgba(0,127,112,0.14)]" : ""}`}
+            >
               <button
                 type="button"
-                onClick={() =>
-                  setActiveSidebarPanel((current) => (current === "agenda" ? null : "agenda"))
-                }
-                className="flex w-full items-center justify-between gap-4 text-left"
+                onClick={() => setActiveSidebarPanel("agenda")}
+                className="flex w-full items-center justify-between gap-4 px-5 py-5 text-left"
               >
-                <div>
-                  <CardTitle className="flex items-center gap-2 text-xl">
-                    <CalendarDays className="size-5 text-[#007f70]" />
-                    Agenda
-                  </CardTitle>
-                  <CardDescription className="mt-2">
-                    Les prochains évènements à garder en tête pendant la conversation.
-                  </CardDescription>
-                </div>
-                <ChevronDown
-                  className={`size-5 text-[#64807b] transition-transform ${
-                    activeSidebarPanel === "agenda" ? "rotate-180" : ""
-                  }`}
-                />
-              </button>
-            </CardHeader>
-            <CardContent
-              className={`overflow-hidden p-4 transition-all ${
-                activeSidebarPanel === "agenda" ? "flex flex-1 min-h-0 flex-col" : "hidden"
-              }`}
-            >
-              <div className="grid flex-1 gap-3 overflow-y-auto pr-1">
-                {mergedUpcomingEvents.length === 0 ? (
-                  <div className="flex min-h-48 flex-col justify-center rounded-3xl border border-dashed border-[#007f70]/15 bg-[#f5fbfa] px-5 text-center">
-                    <p className="text-sm font-medium text-[#244f49]">
-                      Aucun évènement à venir.
-                    </p>
-                    <p className="mt-2 text-sm leading-6 text-[#72908b]">
-                      Demandez à Papote d&apos;en ajouter un pour commencer votre agenda.
+                <div className="flex items-center gap-4">
+                  <div className="flex size-11 items-center justify-center rounded-2xl bg-[#e8f7f4] text-[#007f70] shadow-[inset_0_1px_0_rgba(255,255,255,0.9)]">
+                    <CalendarDays className="size-5" />
+                  </div>
+                  <div>
+                    <CardTitle className="text-[1.1rem] text-[#143d38]">Agenda</CardTitle>
+                    <p className="mt-1 text-[11px] uppercase tracking-[0.24em] text-[#7a8f8b]">
+                      {mergedUpcomingEvents.length} à venir
                     </p>
                   </div>
-                ) : (
-                  mergedUpcomingEvents.map((event) => (
-                    <article
-                      key={event._id}
-                      className="rounded-3xl border border-[#007f70]/10 bg-[#f4fbf9] px-4 py-4 text-left"
-                    >
-                      <p className="text-[11px] uppercase tracking-[0.2em] text-[#7a8f8b]">
-                        {formatEventDate(event.startAt)}
-                      </p>
-                      <p className="mt-2 text-sm font-semibold text-[#173f3a]">{event.title}</p>
-                      {Number.isFinite(event.endAt) ? (
-                        <p className="mt-2 text-sm leading-6 text-[#5f7b76]">
-                          Jusqu&apos;à {formatEventTime(event.endAt)}
-                        </p>
-                      ) : null}
-                    </article>
-                  ))
-                )}
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="border border-white/80 bg-white/76 shadow-[0_24px_80px_rgba(0,127,112,0.08)] backdrop-blur-xl">
-            <CardHeader className="border-b border-[#007f70]/10">
-              <button
-                type="button"
-                onClick={() =>
-                  setActiveSidebarPanel((current) => (current === "music" ? null : "music"))
-                }
-                className="flex w-full items-center justify-between gap-4 text-left"
-              >
-                <div>
-                  <CardTitle className="flex items-center gap-2 text-xl">
-                    <Music4 className="size-5 text-[#1db954]" />
-                    Musique
-                  </CardTitle>
-                  <CardDescription className="mt-2">
-                    Connectez votre compte Spotify pour que Papote puisse lancer la lecture.
-                  </CardDescription>
                 </div>
                 <ChevronDown
-                  className={`size-5 text-[#64807b] transition-transform ${
-                    activeSidebarPanel === "music" ? "rotate-180" : ""
+                  className={`size-5 text-[#64807b] transition-transform duration-500 ${
+                    isAgendaPanelActive ? "rotate-180" : ""
                   }`}
                 />
               </button>
-            </CardHeader>
-            <CardContent className={activeSidebarPanel === "music" ? "space-y-4 p-4" : "hidden"}>
-              <div className="rounded-3xl border border-[#1db954]/12 bg-[#f3fbf6] px-4 py-4 text-left">
+
+              <div
+                className={`grid transition-[grid-template-rows,opacity] duration-500 ${
+                  isAgendaPanelActive ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-70"
+                }`}
+              >
+                <div className="min-h-0 overflow-hidden">
+                  <div className="grid max-h-[26rem] gap-3 overflow-y-auto px-5 pb-5 pr-4">
+                    {mergedUpcomingEvents.length === 0 ? (
+                      <div className="flex min-h-44 flex-col justify-center rounded-[28px] border border-dashed border-[#007f70]/12 bg-white/66 px-5 text-center">
+                        <p className="text-sm font-medium text-[#244f49]">
+                          Aucun évènement à venir.
+                        </p>
+                        <p className="mt-2 text-sm leading-6 text-[#72908b]">
+                          Demandez à Papote d&apos;en ajouter un pour lancer votre journée.
+                        </p>
+                      </div>
+                    ) : (
+                      mergedUpcomingEvents.map((event) => (
+                        <button
+                          key={event._id}
+                          type="button"
+                          onClick={() => openEventFocus(event)}
+                          className="group rounded-[28px] border border-[#007f70]/10 bg-white/84 px-4 py-4 text-left transition-all duration-300 hover:-translate-y-0.5 hover:border-[#007f70]/22 hover:shadow-[0_16px_32px_rgba(0,127,112,0.08)]"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <p className="text-[11px] uppercase tracking-[0.22em] text-[#7a8f8b]">
+                              {formatEventDate(event.startAt)}
+                            </p>
+                            <span className="rounded-full bg-[#eef8f6] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-[#5e827b] transition-colors group-hover:bg-[#e4f5f1]">
+                              Ouvrir
+                            </span>
+                          </div>
+                          <p className="mt-3 text-sm font-semibold text-[#173f3a]">
+                            {event.title}
+                          </p>
+                          {Number.isFinite(event.endAt) ? (
+                            <p className="mt-2 text-sm leading-6 text-[#5f7b76]">
+                              Jusqu&apos;à {formatEventTime(event.endAt)}
+                            </p>
+                          ) : null}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section
+              ref={musicCardRef}
+              data-panel="music"
+              className={`snap-start rounded-[32px] border border-white/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.9),rgba(243,251,246,0.86))] shadow-[0_24px_80px_rgba(0,127,112,0.08)] backdrop-blur-xl transition-all duration-700 ${
+                revealedSidebarPanels.music
+                  ? "translate-y-0 opacity-100"
+                  : "translate-y-8 opacity-0"
+              } ${isMusicPanelActive ? "scale-[1.01] shadow-[0_30px_90px_rgba(18,185,89,0.12)]" : ""}`}
+            >
+              <button
+                type="button"
+                onClick={() => setActiveSidebarPanel("music")}
+                className="flex w-full items-center justify-between gap-4 px-5 py-5 text-left"
+              >
+                <div className="flex items-center gap-4">
+                  <div className="flex size-11 items-center justify-center rounded-2xl bg-[#e7f9ee] text-[#1db954] shadow-[inset_0_1px_0_rgba(255,255,255,0.9)]">
+                    <Music4 className="size-5" />
+                  </div>
+                  <div>
+                    <CardTitle className="text-[1.1rem] text-[#143d38]">Musique</CardTitle>
+                    <p className="mt-1 text-[11px] uppercase tracking-[0.24em] text-[#7a8f8b]">
+                      {spotifyConnected ? "Session active" : "Spotify"}
+                    </p>
+                  </div>
+                </div>
+                <ChevronDown
+                  className={`size-5 text-[#64807b] transition-transform duration-500 ${
+                    isMusicPanelActive ? "rotate-180" : ""
+                  }`}
+                />
+              </button>
+
+              <div
+                className={`grid transition-[grid-template-rows,opacity] duration-500 ${
+                  isMusicPanelActive ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-70"
+                }`}
+              >
+                <div className="min-h-0 overflow-hidden">
+                  <div className="space-y-4 px-5 pb-5">
+              <div className="rounded-[28px] border border-[#1db954]/12 bg-white/74 px-4 py-4 text-left">
                 <p className="text-xs uppercase tracking-[0.22em] text-[#6f8d83]">
                   {spotifyConnected ? "Connecté" : "Non connecté"}
                 </p>
                 <p className="mt-2 text-sm font-semibold text-[#173f3a]">
                   {spotifyConnected
                     ? spotifyAccount?.displayName || "Compte Spotify connecté"
-                    : "Autorisez Spotify une fois, puis Papote pourra jouer vos morceaux."}
+                    : "Connectez Spotify pour laisser Papote lancer vos morceaux."}
                 </p>
                 <p className="mt-2 text-sm leading-6 text-[#5f7b76]">
                   {spotifyNowPlaying
@@ -1181,7 +1370,7 @@ export function VoiceStudio({
                         spotifyNowPlaying.artists ? `, ${spotifyNowPlaying.artists}` : ""
                       }.`
                     : spotifyStatusMessage ||
-                      "Une fois connecté, cliquez sur Discuter puis demandez à Papote de lancer une chanson."}
+                      "Demandez une chanson, puis laissez Papote piloter la lecture."}
                 </p>
               </div>
 
@@ -1291,78 +1480,95 @@ export function VoiceStudio({
                 </div>
               ) : null}
 
-              <div className="flex items-start gap-3 rounded-3xl border border-[#007f70]/10 bg-white/70 px-4 py-3 text-left">
+              <div className="flex items-start gap-3 rounded-[24px] border border-[#007f70]/10 bg-white/70 px-4 py-3 text-left">
                 <CheckCircle2 className="mt-0.5 size-4 text-[#007f70]" />
                 <p className="text-xs leading-5 text-[#64807b]">
                   {isSpotifyReady
-                    ? "Le lecteur Spotify de Papote est prêt. Un clic sur Discuter active aussi le lecteur dans le navigateur."
-                    : "Après la connexion Spotify, laissez cette page ouverte. Le lecteur se prépare automatiquement."}
+                    ? "Le lecteur de Papote est prêt. Le scroll et la voix gardent ce panneau vivant."
+                    : "Laissez la page ouverte après connexion pendant que le lecteur se prépare."}
                 </p>
               </div>
-            </CardContent>
-          </Card>
+                  </div>
+                </div>
+              </div>
+            </section>
 
-          <Card className="border border-white/80 bg-white/76 shadow-[0_24px_80px_rgba(0,127,112,0.08)] backdrop-blur-xl">
-            <CardHeader className="border-b border-[#007f70]/10">
+            <section
+              ref={notesCardRef}
+              data-panel="notes"
+              className={`snap-start rounded-[32px] border border-white/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.88),rgba(247,244,250,0.86))] shadow-[0_24px_80px_rgba(0,127,112,0.08)] backdrop-blur-xl transition-all duration-700 ${
+                revealedSidebarPanels.notes
+                  ? "translate-y-0 opacity-100"
+                  : "translate-y-8 opacity-0"
+              } ${isNotesPanelActive ? "scale-[1.01] shadow-[0_30px_90px_rgba(184,126,177,0.12)]" : ""}`}
+            >
               <button
                 type="button"
-                onClick={() =>
-                  setActiveSidebarPanel((current) => (current === "notes" ? null : "notes"))
-                }
-                className="flex w-full items-center justify-between gap-4 text-left"
+                onClick={() => setActiveSidebarPanel("notes")}
+                className="flex w-full items-center justify-between gap-4 px-5 py-5 text-left"
               >
-                <div>
-                  <CardTitle className="flex items-center gap-2 text-xl">
-                    <FileText className="size-5 text-[#007f70]" />
-                    Notes
-                  </CardTitle>
-                  <CardDescription className="mt-2">
-                    Les informations importantes que Papote garde pour vous.
-                  </CardDescription>
+                <div className="flex items-center gap-4">
+                  <div className="flex size-11 items-center justify-center rounded-2xl bg-[#f5eef7] text-[#8d5d91] shadow-[inset_0_1px_0_rgba(255,255,255,0.9)]">
+                    <FileText className="size-5" />
+                  </div>
+                  <div>
+                    <CardTitle className="text-[1.1rem] text-[#143d38]">Notes</CardTitle>
+                    <p className="mt-1 text-[11px] uppercase tracking-[0.24em] text-[#7a8f8b]">
+                      {mergedRecentNotes.length} enregistrées
+                    </p>
+                  </div>
                 </div>
                 <ChevronDown
-                  className={`size-5 text-[#64807b] transition-transform ${
-                    activeSidebarPanel === "notes" ? "rotate-180" : ""
+                  className={`size-5 text-[#64807b] transition-transform duration-500 ${
+                    isNotesPanelActive ? "rotate-180" : ""
                   }`}
                 />
               </button>
-            </CardHeader>
-            <CardContent
-              className={`overflow-hidden p-4 transition-all ${
-                activeSidebarPanel === "notes" ? "flex min-h-0 flex-col" : "hidden"
-              }`}
-            >
-              <div className="grid max-h-[22rem] gap-3 overflow-y-auto pr-1">
-                {mergedRecentNotes.length === 0 ? (
-                  <div className="flex min-h-40 flex-col justify-center rounded-3xl border border-dashed border-[#007f70]/15 bg-[#f5fbfa] px-5 text-center">
-                    <p className="text-sm font-medium text-[#244f49]">
-                      Aucune note enregistrée.
-                    </p>
-                    <p className="mt-2 text-sm leading-6 text-[#72908b]">
-                      Demandez à Papote de noter une information, un contact ou une recette.
-                    </p>
-                  </div>
-                ) : (
-                  mergedRecentNotes.map((note) => (
-                    <article
-                      key={note._id}
-                      className="rounded-3xl border border-[#007f70]/10 bg-[#f4fbf9] px-4 py-4 text-left"
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <p className="text-[11px] uppercase tracking-[0.2em] text-[#7a8f8b]">
-                          {formatNoteTypeLabel(note.noteType)}
+
+              <div
+                className={`grid transition-[grid-template-rows,opacity] duration-500 ${
+                  isNotesPanelActive ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-70"
+                }`}
+              >
+                <div className="min-h-0 overflow-hidden">
+                  <div className="grid max-h-[24rem] gap-3 overflow-y-auto px-5 pb-5 pr-4">
+                    {mergedRecentNotes.length === 0 ? (
+                      <div className="flex min-h-40 flex-col justify-center rounded-[28px] border border-dashed border-[#007f70]/12 bg-white/68 px-5 text-center">
+                        <p className="text-sm font-medium text-[#244f49]">
+                          Aucune note enregistrée.
                         </p>
-                        <p className="text-[11px] uppercase tracking-[0.15em] text-[#7a8f8b]">
-                          {formatStoredNoteDate(note)}
+                        <p className="mt-2 text-sm leading-6 text-[#72908b]">
+                          Demandez à Papote de noter une info, un contact ou une idée.
                         </p>
                       </div>
-                      <p className="mt-3 text-sm leading-6 text-[#173f3a]">{note.content}</p>
-                    </article>
-                  ))
-                )}
+                    ) : (
+                      mergedRecentNotes.map((note) => (
+                        <button
+                          key={note._id}
+                          type="button"
+                          onClick={() => openNoteFocus(note)}
+                          className="group rounded-[28px] border border-[#b87eb1]/12 bg-white/84 px-4 py-4 text-left transition-all duration-300 hover:-translate-y-0.5 hover:border-[#b87eb1]/24 hover:shadow-[0_16px_32px_rgba(184,126,177,0.08)]"
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <p className="text-[11px] uppercase tracking-[0.2em] text-[#7a8f8b]">
+                              {formatNoteTypeLabel(note.noteType)}
+                            </p>
+                            <span className="rounded-full bg-[#f7eff8] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-[#8b6a90] transition-colors group-hover:bg-[#f3e7f5]">
+                              Ouvrir
+                            </span>
+                          </div>
+                          <p className="mt-2 text-[11px] uppercase tracking-[0.15em] text-[#91a09d]">
+                            {formatStoredNoteDate(note)}
+                          </p>
+                          <p className="mt-3 text-sm leading-6 text-[#173f3a]">{note.content}</p>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
               </div>
-            </CardContent>
-          </Card>
+            </section>
+          </div>
         </aside>
 
         <section className="flex h-full min-h-0 flex-col items-center justify-center py-3 text-center">
@@ -1505,6 +1711,65 @@ export function VoiceStudio({
           </Card>
         </aside>
       </div>
+
+      {focusedSurface ? (
+        <div className="absolute inset-0 z-30 bg-[linear-gradient(180deg,rgba(10,34,31,0.24),rgba(10,34,31,0.42))] backdrop-blur-md">
+          <div className="flex h-full w-full flex-col">
+            <div className="flex items-center justify-between px-6 py-5 sm:px-8 lg:px-10">
+              <div className="rounded-full border border-white/20 bg-white/12 px-4 py-2 text-[11px] uppercase tracking-[0.28em] text-white/82">
+                {focusedSurface.type === "note" ? "Note ouverte" : "Évènement ouvert"}
+              </div>
+              <button
+                type="button"
+                onClick={() => setFocusedSurface(null)}
+                className="flex size-12 items-center justify-center rounded-full border border-white/20 bg-white/12 text-white transition-colors hover:bg-white/20"
+              >
+                <X className="size-5" />
+              </button>
+            </div>
+
+            <div className="flex flex-1 items-center justify-center px-6 pb-8 sm:px-8 lg:px-12">
+              <div className="flex h-full w-full max-w-6xl flex-col justify-center rounded-[40px] border border-white/14 bg-[linear-gradient(180deg,rgba(255,255,255,0.2),rgba(255,255,255,0.08))] p-8 text-left shadow-[0_40px_120px_rgba(0,0,0,0.25)] backdrop-blur-2xl sm:p-10 lg:p-14">
+                {focusedSurface.type === "note" ? (
+                  <>
+                    <p className="text-[11px] uppercase tracking-[0.32em] text-white/68">
+                      {formatNoteTypeLabel(focusedSurface.item.noteType)}
+                    </p>
+                    <p className="mt-3 text-sm uppercase tracking-[0.22em] text-white/52">
+                      {formatStoredNoteDate(focusedSurface.item)}
+                    </p>
+                    <p className="mt-8 max-w-4xl text-3xl font-semibold leading-[1.2] tracking-[-0.04em] text-white sm:text-4xl lg:text-6xl">
+                      {focusedSurface.item.content}
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-[11px] uppercase tracking-[0.32em] text-white/68">
+                      Agenda
+                    </p>
+                    <p className="mt-3 text-sm uppercase tracking-[0.22em] text-white/52">
+                      {formatEventDate(focusedSurface.item.startAt)}
+                    </p>
+                    <p className="mt-8 max-w-4xl text-3xl font-semibold leading-[1.2] tracking-[-0.04em] text-white sm:text-4xl lg:text-6xl">
+                      {focusedSurface.item.title}
+                    </p>
+                    <div className="mt-10 flex flex-wrap gap-3">
+                      <div className="rounded-full border border-white/18 bg-white/10 px-4 py-2 text-sm text-white/82">
+                        Début : {formatEventTime(focusedSurface.item.startAt)}
+                      </div>
+                      {Number.isFinite(focusedSurface.item.endAt) ? (
+                        <div className="rounded-full border border-white/18 bg-white/10 px-4 py-2 text-sm text-white/82">
+                          Fin : {formatEventTime(focusedSurface.item.endAt)}
+                        </div>
+                      ) : null}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {trialIsExhausted ? (
         <div className="absolute inset-0 z-40 flex items-center justify-center bg-[#143c38]/35 px-6 backdrop-blur-sm">
@@ -1687,8 +1952,10 @@ function buildProfileContext(
       ? "Commence cet appel en rappelant naturellement ces rendez-vous du jour une seule fois, puis poursuis la conversation normalement."
       : null,
     "Si l'utilisateur demande d'ajouter un rendez-vous ou un évènement à son calendrier, utilise l'outil client createCalendarEvent avec un titre et une date de début précise.",
+    "Si l'utilisateur demande d'ouvrir, afficher ou mettre en focus un rendez-vous ou un évènement, utilise l'outil client openCalendarEvent.",
     "Si l'utilisateur demande de supprimer un rendez-vous ou un évènement de son calendrier, utilise l'outil client deleteCalendarEvent avec le titre ou un extrait suffisant pour l'identifier.",
     "Si l'utilisateur demande de noter, mémoriser ou enregistrer une information, utilise l'outil client createNote avec le contenu, le type de note et la date si elle est connue.",
+    "Si l'utilisateur demande d'ouvrir, afficher ou mettre en focus une note, utilise l'outil client openNote.",
     "Si l'utilisateur demande de supprimer une note, utilise l'outil client deleteNote avec le contenu ou un extrait suffisamment distinctif.",
     spotifyContext.connected
       ? `Spotify est connecté${spotifyContext.ready ? " et le lecteur est prêt." : "."}`
@@ -2397,6 +2664,23 @@ function looksLikeDeleteTool(toolName) {
     normalized.includes("delete") ||
     normalized.includes("remove") ||
     normalized.includes("supprimer")
+  );
+}
+
+function looksLikeOpenTool(toolName) {
+  const normalized = normalizeToolIdentifier(toolName);
+
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    normalized.includes("open") ||
+    normalized.includes("focus") ||
+    normalized.includes("show") ||
+    normalized.includes("display") ||
+    normalized.includes("ouvrir") ||
+    normalized.includes("afficher")
   );
 }
 
