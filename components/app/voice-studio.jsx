@@ -13,6 +13,8 @@ import {
   Mic,
   Music4,
   PauseCircle,
+  Phone,
+  PhoneOff,
   ShieldAlert,
   X,
 } from "lucide-react";
@@ -1316,6 +1318,16 @@ export function VoiceStudio({
   const isAgendaPanelActive = activeSidebarPanel === "agenda";
   const isMusicPanelActive = activeSidebarPanel === "music";
   const isNotesPanelActive = activeSidebarPanel === "notes";
+  const canToggleConversation = !(trialIsExhausted || isConnecting || status === "disconnecting");
+  const orbCallLabel = status === "connected" ? "Terminer l'appel" : "Démarrer l'appel";
+  const orbState =
+    status === "connected"
+      ? isUserSpeaking
+        ? "user-talking"
+        : isSpeaking
+          ? "agent-talking"
+          : "listening"
+      : "idle";
 
   return (
     <main className="relative h-[100svh] overflow-hidden bg-[radial-gradient(circle_at_top_left,rgba(184,126,177,0.18),transparent_28%),radial-gradient(circle_at_82%_18%,rgba(0,127,112,0.16),transparent_24%),linear-gradient(180deg,#fffefd_0%,#f4fbf9_48%,#f7eef7_100%)] text-[#0d3d38]">
@@ -1677,14 +1689,41 @@ export function VoiceStudio({
             <Image
               src="/L7SEVrpysBPlGP9kfcdn6L0MOR0.avif"
               alt="Logo Papote"
-              width={168}
-              height={168}
-              className="h-24 w-24 object-contain sm:h-28 sm:w-28 lg:h-32 lg:w-32"
+              width={196}
+              height={196}
+              className="h-28 w-28 object-contain sm:h-32 sm:w-32 lg:h-36 lg:w-36"
               priority
             />
           </div>
+          <button
+            type="button"
+            onClick={status === "connected" ? endConversation : startConversation}
+            disabled={!canToggleConversation}
+            aria-label={orbCallLabel}
+            className={`group relative mt-5 flex aspect-square w-[min(38vh,19rem)] shrink-0 items-center justify-center rounded-full sm:mt-6 sm:w-[min(40vh,22rem)] lg:w-[min(42vh,24rem)] ${
+              canToggleConversation ? "cursor-pointer" : "cursor-not-allowed opacity-70"
+            }`}
+          >
+            <div className="absolute inset-0 rounded-full border border-white/80 bg-[radial-gradient(circle_at_30%_30%,rgba(255,255,255,0.92),rgba(246,250,249,0.85)_46%,rgba(244,234,244,0.86)_100%)] shadow-[0_30px_120px_rgba(0,127,112,0.15)] backdrop-blur-xl transition-transform duration-500 group-hover:scale-[1.015]" />
+            <Orb state={orbState} className="relative z-10 mx-auto my-[12%] size-[76%]" />
+            <div className="absolute inset-x-0 bottom-[14%] z-20 flex justify-center">
+              <div
+                className={`flex size-16 items-center justify-center rounded-full border shadow-[0_16px_40px_rgba(0,0,0,0.18)] transition-all duration-300 sm:size-18 ${
+                  status === "connected"
+                    ? "border-[#ffb8be]/60 bg-[#b6505f] text-white"
+                    : "border-[#cfe7e2] bg-white/95 text-[#0d3d38]"
+                } ${canToggleConversation ? "group-hover:-translate-y-1" : ""}`}
+              >
+                {status === "connected" ? (
+                  <PhoneOff className="size-6 sm:size-7" />
+                ) : (
+                  <Phone className="size-6 sm:size-7" />
+                )}
+              </div>
+            </div>
+          </button>
 
-          <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
+          <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
             <Badge
               variant="secondary"
               className="rounded-full border border-[#007f70]/10 bg-white/85 px-4 py-2 text-[#0d3d38] shadow-[0_12px_30px_rgba(0,127,112,0.08)]"
@@ -1703,23 +1742,7 @@ export function VoiceStudio({
             </Badge>
           </div>
 
-          <div className="mt-5 aspect-square w-[min(38vh,19rem)] shrink-0 rounded-full border border-white/80 bg-[radial-gradient(circle_at_30%_30%,rgba(255,255,255,0.92),rgba(246,250,249,0.85)_46%,rgba(244,234,244,0.86)_100%)] shadow-[0_30px_120px_rgba(0,127,112,0.15)] backdrop-blur-xl sm:mt-6 sm:w-[min(40vh,22rem)] lg:w-[min(42vh,24rem)]">
-            <Orb
-              state={status === "connected" ? (isSpeaking ? "talking" : "listening") : "idle"}
-              className="mx-auto my-[12%] size-[76%]"
-            />
-          </div>
-
           <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
-            <Button
-              size="lg"
-              onClick={status === "connected" ? endConversation : startConversation}
-              disabled={trialIsExhausted || isConnecting || status === "disconnecting"}
-              className="min-w-44 rounded-full px-8"
-            >
-              <Mic className="size-4" />
-              {status === "connected" ? "Terminer" : "Discuter"}
-            </Button>
             <Button
               type="button"
               variant="outline"
