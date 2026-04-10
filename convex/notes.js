@@ -58,6 +58,51 @@ export const createForCurrent = mutation({
   },
 });
 
+export const deleteForCurrent = mutation({
+  args: {
+    noteId: v.optional(v.id("notes")),
+    content: v.optional(v.string()),
+    query: v.optional(v.string()),
+    noteType: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await requireCurrentUserId(ctx);
+    const directId = args.noteId;
+
+    if (directId) {
+      const directNote = await ctx.db.get(directId);
+      if (!directNote || directNote.userId !== userId) {
+        throw new Error("Impossible de retrouver cette note.");
+      }
+
+      await ctx.db.delete(directId);
+      return formatNote(directNote);
+    }
+
+    const queryText = (args.query?.trim() || args.content?.trim() || "").trim();
+    const normalizedQuery = normalizeSearchText(queryText);
+    const normalizedType = normalizeSearchText(args.noteType?.trim() || "");
+
+    if (!normalizedQuery) {
+      throw new Error("Le contenu de la note à supprimer est manquant.");
+    }
+
+    const notes = await ctx.db
+      .query("notes")
+      .withIndex("by_user_createdAt", (q) => q.eq("userId", userId))
+      .order("desc")
+      .take(200);
+
+    const match = findBestNoteMatch(notes, normalizedQuery, normalizedType);
+    if (!match) {
+      throw new Error("Aucune note correspondante n'a été trouvée.");
+    }
+
+    await ctx.db.delete(match._id);
+    return formatNote(match);
+  },
+});
+
 async function getCurrentUserId(ctx) {
   const identity = await ctx.auth.getUserIdentity();
   return identity?.subject ?? null;
@@ -108,4 +153,56 @@ function formatNote(note) {
     createdAt: note.createdAt,
     updatedAt: note.updatedAt,
   };
+}
+
+function findBestNoteMatch(notes, normalizedQuery, normalizedType) {
+  const scoredNotes = notes
+    .map((note) => ({
+      note,
+      score: getNoteMatchScore(note, normalizedQuery, normalizedType),
+    }))
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) => right.score - left.score);
+
+  return scoredNotes[0]?.note ?? null;
+}
+
+function getNoteMatchScore(note, normalizedQuery, normalizedType) {
+  const normalizedContent = normalizeSearchText(note.content);
+  if (!normalizedContent) {
+    return 0;
+  }
+
+  let score = 0;
+  if (normalizedContent === normalizedQuery) {
+    score += 120;
+  } else if (
+    normalizedContent.includes(normalizedQuery) ||
+    normalizedQuery.includes(normalizedContent)
+  ) {
+    score += 80;
+  } else {
+    const queryWords = normalizedQuery.split(" ").filter(Boolean);
+    const matchingWords = queryWords.filter((word) => normalizedContent.includes(word));
+    score += matchingWords.length * 15;
+  }
+
+  if (normalizedType) {
+    const currentType = normalizeSearchText(note.noteType);
+    if (currentType === normalizedType) {
+      score += 30;
+    }
+  }
+
+  return score;
+}
+
+function normalizeSearchText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }

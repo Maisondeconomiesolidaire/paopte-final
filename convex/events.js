@@ -66,6 +66,94 @@ export const createForCurrent = mutation({
   },
 });
 
+export const consumeTodayRemindersForCurrent = mutation({
+  args: {
+    dayStart: v.string(),
+    dayEnd: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const userId = await requireCurrentUserId(ctx);
+    const dayStart = parseDateValue(args.dayStart, "début de journée");
+    const dayEnd = parseDateValue(args.dayEnd, "fin de journée");
+
+    if (dayEnd <= dayStart) {
+      throw new Error("La fenêtre des rappels du jour est invalide.");
+    }
+
+    const events = await ctx.db
+      .query("events")
+      .withIndex("by_user_startAt", (q) => q.eq("userId", userId))
+      .order("asc")
+      .take(200);
+
+    const reminderCandidates = events.filter(
+      (event) =>
+        event.startAt >= dayStart &&
+        event.startAt < dayEnd &&
+        typeof event.autoReminderSentAt !== "number"
+    );
+
+    if (reminderCandidates.length === 0) {
+      return [];
+    }
+
+    const now = Date.now();
+    for (const event of reminderCandidates) {
+      await ctx.db.patch(event._id, {
+        autoReminderSentAt: now,
+        updatedAt: now,
+      });
+    }
+
+    return reminderCandidates.map(formatEvent);
+  },
+});
+
+export const deleteForCurrent = mutation({
+  args: {
+    eventId: v.optional(v.id("events")),
+    title: v.optional(v.string()),
+    query: v.optional(v.string()),
+    startAt: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await requireCurrentUserId(ctx);
+    const directId = args.eventId;
+
+    if (directId) {
+      const directEvent = await ctx.db.get(directId);
+      if (!directEvent || directEvent.userId !== userId) {
+        throw new Error("Impossible de retrouver cet évènement.");
+      }
+
+      await ctx.db.delete(directId);
+      return formatEvent(directEvent);
+    }
+
+    const queryText = (args.query?.trim() || args.title?.trim() || "").trim();
+    const normalizedQuery = normalizeSearchText(queryText);
+    const requestedTimestamp = args.startAt ? tryParseDateValue(args.startAt) : null;
+
+    if (!normalizedQuery) {
+      throw new Error("Le nom ou la description de l'évènement à supprimer est manquant.");
+    }
+
+    const events = await ctx.db
+      .query("events")
+      .withIndex("by_user_startAt", (q) => q.eq("userId", userId))
+      .order("asc")
+      .take(200);
+
+    const match = findBestEventMatch(events, normalizedQuery, requestedTimestamp);
+    if (!match) {
+      throw new Error("Aucun évènement correspondant n'a été trouvé.");
+    }
+
+    await ctx.db.delete(match._id);
+    return formatEvent(match);
+  },
+});
+
 async function getCurrentUserId(ctx) {
   const identity = await ctx.auth.getUserIdentity();
   return identity?.subject ?? null;
@@ -104,6 +192,7 @@ function formatEvent(event) {
     title: event.title,
     startAt: event.startAt,
     endAt: event.endAt ?? null,
+    autoReminderSentAt: event.autoReminderSentAt ?? null,
     createdAt: event.createdAt,
     updatedAt: event.updatedAt,
   };
@@ -115,4 +204,70 @@ function isUpcomingOrRecentlyCreated(event) {
   const effectiveEndAt = typeof event.endAt === "number" ? event.endAt : event.startAt;
 
   return effectiveEndAt >= now - recentWindowMs;
+}
+
+function findBestEventMatch(events, normalizedQuery, requestedTimestamp) {
+  const scoredEvents = events
+    .map((event) => ({
+      event,
+      score: getEventMatchScore(event, normalizedQuery, requestedTimestamp),
+    }))
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+
+      return Math.abs((left.event.startAt || 0) - (requestedTimestamp || Date.now())) -
+        Math.abs((right.event.startAt || 0) - (requestedTimestamp || Date.now()));
+    });
+
+  return scoredEvents[0]?.event ?? null;
+}
+
+function getEventMatchScore(event, normalizedQuery, requestedTimestamp) {
+  const normalizedTitle = normalizeSearchText(event.title);
+  if (!normalizedTitle) {
+    return 0;
+  }
+
+  let score = 0;
+  if (normalizedTitle === normalizedQuery) {
+    score += 120;
+  } else if (
+    normalizedTitle.includes(normalizedQuery) ||
+    normalizedQuery.includes(normalizedTitle)
+  ) {
+    score += 80;
+  } else {
+    const queryWords = normalizedQuery.split(" ").filter(Boolean);
+    const matchingWords = queryWords.filter((word) => normalizedTitle.includes(word));
+    score += matchingWords.length * 15;
+  }
+
+  if (requestedTimestamp) {
+    const distance = Math.abs(event.startAt - requestedTimestamp);
+    if (distance <= 2 * 60 * 60 * 1000) {
+      score += 40;
+    } else if (distance <= 24 * 60 * 60 * 1000) {
+      score += 20;
+    }
+  }
+
+  return score;
+}
+
+function normalizeSearchText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function tryParseDateValue(value) {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
 }

@@ -44,6 +44,7 @@ export default defineSchema({
     title: v.string(),
     startAt: v.number(),
     endAt: v.optional(v.number()),
+    autoReminderSentAt: v.optional(v.number()),
     createdAt: v.number(),
     updatedAt: v.number(),
   }).index("by_user_startAt", ["userId", "startAt"]),

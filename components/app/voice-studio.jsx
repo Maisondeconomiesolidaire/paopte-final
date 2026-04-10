@@ -85,7 +85,10 @@ export function VoiceStudio({
   const appendConversationMessage = useMutation(api.conversations.appendMessage);
   const finishConversation = useMutation(api.conversations.end);
   const createCalendarEvent = useMutation(api.events.createForCurrent);
+  const consumeTodayReminders = useMutation(api.events.consumeTodayRemindersForCurrent);
+  const deleteCalendarEvent = useMutation(api.events.deleteForCurrent);
   const createNote = useMutation(api.notes.createForCurrent);
+  const deleteNote = useMutation(api.notes.deleteForCurrent);
 
   function applySpotifySession(nextSession) {
     setSpotifySession(nextSession);
@@ -400,6 +403,36 @@ export function VoiceStudio({
     return confirmationMessage;
   }
 
+  async function handleDeleteCalendarEvent(parameters) {
+    const normalizedEvent = normalizeDeleteCalendarToolParameters(parameters, sessionTimeZone);
+    const deletedEvent = await deleteCalendarEvent(normalizedEvent);
+    const confirmationMessage = `Évènement supprimé : ${deletedEvent.title}.`;
+
+    setLocalCreatedEvents((current) =>
+      current.filter((event) => String(event._id) !== String(deletedEvent._id))
+    );
+    setActiveSidebarPanel("agenda");
+    setToolNotice(confirmationMessage);
+    setRequestError("");
+
+    return confirmationMessage;
+  }
+
+  async function handleDeleteNote(parameters) {
+    const normalizedNote = normalizeDeleteNoteToolParameters(parameters);
+    const deletedNote = await deleteNote(normalizedNote);
+    const confirmationMessage = `Note supprimée : ${truncateText(deletedNote.content, 72)}.`;
+
+    setLocalCreatedNotes((current) =>
+      current.filter((note) => String(note._id) !== String(deletedNote._id))
+    );
+    setActiveSidebarPanel("notes");
+    setToolNotice(confirmationMessage);
+    setRequestError("");
+
+    return confirmationMessage;
+  }
+
   const calendarToolHandlers = {
     createCalendarEvent: handleCreateCalendarEvent,
     create_calendar_event: handleCreateCalendarEvent,
@@ -415,6 +448,14 @@ export function VoiceStudio({
     ajouter_rendez_vous: handleCreateCalendarEvent,
     ajouterRendezvous: handleCreateCalendarEvent,
     ajouter_rendezvous: handleCreateCalendarEvent,
+    deleteCalendarEvent: handleDeleteCalendarEvent,
+    delete_calendar_event: handleDeleteCalendarEvent,
+    removeCalendarEvent: handleDeleteCalendarEvent,
+    remove_calendar_event: handleDeleteCalendarEvent,
+    supprimerEvenement: handleDeleteCalendarEvent,
+    supprimer_evenement: handleDeleteCalendarEvent,
+    supprimerRendezVous: handleDeleteCalendarEvent,
+    supprimer_rendez_vous: handleDeleteCalendarEvent,
     playSpotifySong: playSpotifySong,
     play_spotify_song: playSpotifySong,
     playSongOnSpotify: playSpotifySong,
@@ -441,6 +482,12 @@ export function VoiceStudio({
     save_note: handleCreateNote,
     noterQuelqueChose: handleCreateNote,
     noter_quelque_chose: handleCreateNote,
+    deleteNote: handleDeleteNote,
+    delete_note: handleDeleteNote,
+    removeNote: handleDeleteNote,
+    remove_note: handleDeleteNote,
+    supprimerNote: handleDeleteNote,
+    supprimer_note: handleDeleteNote,
   };
 
   async function handleCreateCalendarEvent(parameters) {
@@ -715,6 +762,16 @@ export function VoiceStudio({
       const parameters = extractToolParameters(toolCall);
       const normalizedToolName = normalizeToolIdentifier(toolName);
 
+      if (looksLikeDeleteTool(toolName)) {
+        if (looksLikeNoteTool(toolName)) {
+          return await handleDeleteNote(parameters);
+        }
+
+        if (looksLikeCalendarTool(toolName)) {
+          return await handleDeleteCalendarEvent(parameters);
+        }
+      }
+
       if (looksLikeCalendarTool(toolName)) {
         return await handleCreateCalendarEvent(parameters);
       }
@@ -858,6 +915,7 @@ export function VoiceStudio({
     try {
       await navigator.mediaDevices.getUserMedia({ audio: true });
       const dateContext = await buildConversationDateContext(profile);
+      const todayBounds = buildDayBounds(dateContext.iso, dateContext.timeZone);
       setSessionTimeZone(dateContext.timeZone || "UTC");
 
       if (spotifyConnected && spotifyPlayerRef.current?.activateElement) {
@@ -893,6 +951,7 @@ export function VoiceStudio({
           mergedUpcomingEvents,
           mergedRecentNotes,
           dateContext,
+          [],
           {
             connected: spotifyConnected,
             ready: isSpotifyReady,
@@ -907,8 +966,13 @@ export function VoiceStudio({
 
       activeConversationRef.current = startedConversationId;
       await createConversation({ externalId: startedConversationId });
+      const todayReminderEvents = await consumeTodayReminders(todayBounds);
       setLocalCreatedEvents([]);
       setLocalCreatedNotes([]);
+
+      if (todayReminderEvents.length > 0) {
+        setActiveSidebarPanel("agenda");
+      }
 
       conversation.sendContextualUpdate(
         buildProfileContext(
@@ -916,6 +980,7 @@ export function VoiceStudio({
           recentConversations,
           mergedUpcomingEvents,
           mergedRecentNotes,
+          todayReminderEvents,
           dateContext,
           {
             connected: spotifyConnected,
@@ -1499,6 +1564,7 @@ function buildDynamicVariables(
   upcomingEvents,
   recentNotes,
   dateContext,
+  todayReminderEvents = [],
   spotifyContext = {}
 ) {
   return {
@@ -1524,6 +1590,7 @@ function buildDynamicVariables(
     previous_conversations_summary: buildConversationSummary(recentConversations),
     upcoming_events_summary: buildUpcomingEventsSummary(upcomingEvents),
     recent_notes_summary: buildNotesSummary(recentNotes),
+    today_reminders_summary: buildTodayRemindersSummary(todayReminderEvents),
   };
 }
 
@@ -1532,6 +1599,7 @@ function buildProfileContext(
   recentConversations,
   upcomingEvents,
   recentNotes,
+  todayReminderEvents,
   dateContext,
   spotifyContext = {}
 ) {
@@ -1551,8 +1619,16 @@ function buildProfileContext(
       : "Historique récent : aucune conversation précédente enregistrée.",
     `Évènements à venir : ${buildUpcomingEventsSummary(upcomingEvents)}`,
     `Notes utiles : ${buildNotesSummary(recentNotes)}`,
+    todayReminderEvents.length
+      ? `Rappels à annoncer maintenant : ${buildTodayRemindersSummary(todayReminderEvents)}`
+      : "Rappels du jour à annoncer maintenant : aucun.",
+    todayReminderEvents.length
+      ? "Commence cet appel en rappelant naturellement ces rendez-vous du jour une seule fois, puis poursuis la conversation normalement."
+      : null,
     "Si l'utilisateur demande d'ajouter un rendez-vous ou un évènement à son calendrier, utilise l'outil client createCalendarEvent avec un titre et une date de début précise.",
+    "Si l'utilisateur demande de supprimer un rendez-vous ou un évènement de son calendrier, utilise l'outil client deleteCalendarEvent avec le titre ou un extrait suffisant pour l'identifier.",
     "Si l'utilisateur demande de noter, mémoriser ou enregistrer une information, utilise l'outil client createNote avec le contenu, le type de note et la date si elle est connue.",
+    "Si l'utilisateur demande de supprimer une note, utilise l'outil client deleteNote avec le contenu ou un extrait suffisamment distinctif.",
     spotifyContext.connected
       ? `Spotify est connecté${spotifyContext.ready ? " et le lecteur est prêt." : "."}`
       : "Spotify n'est pas encore connecté.",
@@ -1606,6 +1682,17 @@ function buildNotesSummary(recentNotes) {
         noteDateLabel ? ` (${noteDateLabel})` : ""
       }`;
     })
+    .join(" || ");
+}
+
+function buildTodayRemindersSummary(todayReminderEvents) {
+  if (!todayReminderEvents?.length) {
+    return "Aucun rendez-vous à rappeler aujourd'hui.";
+  }
+
+  return todayReminderEvents
+    .slice(0, 5)
+    .map((event) => `${event.title} à ${formatEventTime(event.startAt)}`)
     .join(" || ");
 }
 
@@ -1779,6 +1866,44 @@ async function buildConversationDateContext(profile) {
   }
 }
 
+function buildDayBounds(referenceIso, timeZone) {
+  const referenceDate = referenceIso ? new Date(referenceIso) : new Date();
+  const values = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    })
+      .formatToParts(referenceDate)
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value])
+  );
+
+  const year = Number(values.year);
+  const month = Number(values.month);
+  const day = Number(values.day);
+  const nextDayDate = new Date(Date.UTC(year, month - 1, day + 1));
+
+  return {
+    dayStart: zonedDateTimeToIso(
+      { year, month, day, hour: 0, minute: 0, second: 0 },
+      timeZone
+    ),
+    dayEnd: zonedDateTimeToIso(
+      {
+        year: nextDayDate.getUTCFullYear(),
+        month: nextDayDate.getUTCMonth() + 1,
+        day: nextDayDate.getUTCDate(),
+        hour: 0,
+        minute: 0,
+        second: 0,
+      },
+      timeZone
+    ),
+  };
+}
+
 function sanitizeVisibleText(text) {
   if (typeof text !== "string") {
     return "Message sans contenu visible.";
@@ -1883,6 +2008,66 @@ function normalizeNoteToolParameters(parameters, timeZone) {
   };
 }
 
+function normalizeDeleteCalendarToolParameters(parameters, timeZone) {
+  const normalizedParameters = normalizeToolParameters(parameters);
+  const title = firstNonEmptyString(
+    normalizedParameters?.title,
+    normalizedParameters?.query,
+    normalizedParameters?.eventTitle,
+    normalizedParameters?.name,
+    normalizedParameters?.summary,
+    normalizedParameters?.label,
+    normalizedParameters?.content,
+    normalizedParameters?.text
+  );
+  const startAt =
+    buildDateTimeFromParts(normalizedParameters) ||
+    firstNonEmptyString(
+      normalizedParameters?.startAt,
+      normalizedParameters?.date,
+      normalizedParameters?.datetime,
+      normalizedParameters?.when
+    );
+
+  if (!title) {
+    throw new Error("Le rendez-vous à supprimer doit être identifié par son titre.");
+  }
+
+  return {
+    title,
+    query: title,
+    startAt: startAt ? normalizeToolDateValue(startAt, timeZone) : undefined,
+  };
+}
+
+function normalizeDeleteNoteToolParameters(parameters) {
+  const normalizedParameters = normalizeToolParameters(parameters);
+  const content = firstNonEmptyString(
+    normalizedParameters?.content,
+    normalizedParameters?.query,
+    normalizedParameters?.note,
+    normalizedParameters?.text,
+    normalizedParameters?.title,
+    normalizedParameters?.summary,
+    normalizedParameters?.description
+  );
+  const noteType = firstNonEmptyString(
+    normalizedParameters?.noteType,
+    normalizedParameters?.type,
+    normalizedParameters?.category
+  );
+
+  if (!content) {
+    throw new Error("La note à supprimer doit être identifiée par son contenu.");
+  }
+
+  return {
+    content,
+    query: content,
+    noteType: noteType || undefined,
+  };
+}
+
 function buildDateTimeFromParts(parameters) {
   const date = firstNonEmptyString(
     parameters?.date,
@@ -1927,6 +2112,15 @@ function firstNonEmptyString(...values) {
   }
 
   return "";
+}
+
+function truncateText(value, maxLength) {
+  const text = String(value || "").trim();
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }
 
 function normalizeToolDateValue(value, timeZone = "UTC") {
@@ -2128,6 +2322,20 @@ function looksLikeSpotifyTool(toolName) {
     normalized.includes("pausemusic") ||
     normalized.includes("pauseplayback") ||
     normalized.includes("stopmusic")
+  );
+}
+
+function looksLikeDeleteTool(toolName) {
+  const normalized = normalizeToolIdentifier(toolName);
+
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    normalized.includes("delete") ||
+    normalized.includes("remove") ||
+    normalized.includes("supprimer")
   );
 }
 
