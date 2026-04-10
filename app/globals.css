@@ -45,136 +45,48 @@ code {
     transform: translate3d(0, 0, 0) scale(0.985);
   }
   50% {
-    transform: translate3d(0, -2.5%, 0) scale(1.025);
+    transform: translate3d(0, -2.2%, 0) scale(1.02);
   }
 }
 
-@keyframes orbMorphIdle {
+@keyframes orbOrbital {
   0%,
   100% {
-    transform: scale(0.96, 1) rotate(0deg);
-    border-radius: 42%;
-    filter: saturate(1);
+    border-radius: 40%;
+    filter: saturate(1.02);
+  }
+  25% {
+    border-radius: 48%;
+    filter: saturate(1.08);
   }
   50% {
-    transform: scale(1.03, 0.98) rotate(8deg);
-    border-radius: 46%;
+    border-radius: 42%;
+    filter: saturate(1.12);
+  }
+  75% {
+    border-radius: 50%;
     filter: saturate(1.06);
   }
 }
 
-@keyframes orbMorphListen {
-  0%,
-  100% {
-    transform: scale(0.96, 1) rotate(0deg);
-    border-radius: 40%;
-    filter: saturate(1.02);
+@keyframes orbHaloSpin {
+  0% {
+    border-radius: 46%;
   }
-  32% {
-    transform: scale(1.04, 0.97) rotate(8deg);
-    border-radius: 47%;
-  }
-  64% {
-    transform: scale(0.98, 1.04) rotate(-7deg);
-    border-radius: 44%;
-    filter: saturate(1.12);
-  }
-}
-
-@keyframes orbMorphUser {
-  0%,
-  100% {
-    transform: scale(0.96, 1.04) rotate(-4deg);
-    border-radius: 38%;
-    filter: saturate(1.05);
-  }
-  22% {
-    transform: scale(1.08, 0.94) rotate(10deg);
+  50% {
     border-radius: 50%;
   }
-  46% {
-    transform: scale(0.95, 1.08) rotate(-10deg);
-    border-radius: 42%;
-  }
-  72% {
-    transform: scale(1.05, 0.96) rotate(6deg);
-    border-radius: 48%;
-    filter: saturate(1.22);
+  100% {
+    border-radius: 46%;
   }
 }
 
-@keyframes orbMorphAgent {
+@keyframes orbCoreBreath {
   0%,
   100% {
-    transform: scale(0.94, 1.06) rotate(-6deg);
-    border-radius: 38%;
-    filter: saturate(1.08);
-  }
-  20% {
-    transform: scale(1.12, 0.92) rotate(9deg);
-    border-radius: 52%;
-  }
-  44% {
-    transform: scale(0.98, 1.08) rotate(-8deg);
-    border-radius: 40%;
-  }
-  70% {
-    transform: scale(1.08, 0.96) rotate(6deg);
-    border-radius: 49%;
-    filter: saturate(1.26);
-  }
-}
-
-@keyframes orbHaloIdle {
-  0%,
-  100% {
-    transform: scale(0.94);
-    opacity: 0.34;
+    transform: scale(0.96);
   }
   50% {
     transform: scale(1.04);
-    opacity: 0.5;
-  }
-}
-
-@keyframes orbHaloListen {
-  0%,
-  100% {
-    transform: scale(0.92);
-    opacity: 0.3;
-  }
-  50% {
-    transform: scale(1.08);
-    opacity: 0.62;
-  }
-}
-
-@keyframes orbHaloUser {
-  0% {
-    transform: scale(0.86);
-    opacity: 0.16;
-  }
-  45% {
-    transform: scale(1.14);
-    opacity: 0.58;
-  }
-  100% {
-    transform: scale(1.28);
-    opacity: 0;
-  }
-}
-
-@keyframes orbHaloAgent {
-  0% {
-    transform: scale(0.88);
-    opacity: 0.18;
-  }
-  45% {
-    transform: scale(1.1);
-    opacity: 0.56;
-  }
-  100% {
-    transform: scale(1.24);
-    opacity: 0;
   }
 }

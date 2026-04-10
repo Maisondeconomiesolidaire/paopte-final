@@ -1320,14 +1320,8 @@ export function VoiceStudio({
   const isNotesPanelActive = activeSidebarPanel === "notes";
   const canToggleConversation = !(trialIsExhausted || isConnecting || status === "disconnecting");
   const orbCallLabel = status === "connected" ? "Terminer l'appel" : "Démarrer l'appel";
-  const orbState =
-    status === "connected"
-      ? isUserSpeaking
-        ? "user-talking"
-        : isSpeaking
-          ? "agent-talking"
-          : "listening"
-      : "idle";
+  const orbAgentState =
+    status === "connected" ? (isSpeaking ? "talking" : "listening") : null;
 
   return (
     <main className="relative h-[100svh] overflow-hidden bg-[radial-gradient(circle_at_top_left,rgba(184,126,177,0.18),transparent_28%),radial-gradient(circle_at_82%_18%,rgba(0,127,112,0.16),transparent_24%),linear-gradient(180deg,#fffefd_0%,#f4fbf9_48%,#f7eef7_100%)] text-[#0d3d38]">
@@ -1705,7 +1699,24 @@ export function VoiceStudio({
             }`}
           >
             <div className="absolute inset-0 rounded-full border border-white/80 bg-[radial-gradient(circle_at_30%_30%,rgba(255,255,255,0.92),rgba(246,250,249,0.85)_46%,rgba(244,234,244,0.86)_100%)] shadow-[0_30px_120px_rgba(0,127,112,0.15)] backdrop-blur-xl transition-transform duration-500 group-hover:scale-[1.015]" />
-            <Orb state={orbState} className="relative z-10 mx-auto my-[12%] size-[76%]" />
+            <Orb
+              agentState={orbAgentState}
+              colors={["#5ed1c1", "#c38fbc"]}
+              getInputVolume={() =>
+                typeof conversation.getInputVolume === "function"
+                  ? conversation.getInputVolume()
+                  : 0
+              }
+              getOutputVolume={() =>
+                typeof conversation.getOutputVolume === "function"
+                  ? conversation.getOutputVolume()
+                  : isSpeaking
+                    ? 0.82
+                    : 0
+              }
+              seed={371}
+              className="relative z-10 mx-auto my-[12%] size-[76%]"
+            />
             <div className="absolute inset-x-0 bottom-[14%] z-20 flex justify-center">
               <div
                 className={`flex size-16 items-center justify-center rounded-full border shadow-[0_16px_40px_rgba(0,0,0,0.18)] transition-all duration-300 sm:size-18 ${
