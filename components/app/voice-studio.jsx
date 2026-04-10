@@ -2897,61 +2897,72 @@ function inferSidebarPanelFromText(text) {
 
 function buildSpotifySearchQuery(parameters) {
   const normalizedParameters = normalizeToolParameters(parameters);
-  const rawTitle = firstNonEmptyString(
+  const rawTitle = sanitizeSpotifySearchField(
+    firstNonEmptyString(
     normalizedParameters?.query,
     normalizedParameters?.track,
     normalizedParameters?.song,
     normalizedParameters?.title,
     normalizedParameters?.music,
     normalizedParameters?.prompt
+    )
   );
-  const rawArtist = firstNonEmptyString(
+  const rawArtist = sanitizeSpotifySearchField(
+    firstNonEmptyString(
     normalizedParameters?.artist,
     normalizedParameters?.artistName,
     normalizedParameters?.singer
+    )
   );
   const parsedRequest = parseSpotifyQueryParts(rawTitle, rawArtist);
   const title = parsedRequest.title;
   const artist = parsedRequest.artist;
   const query = title ? (artist ? `${title} ${artist}` : title) : artist;
+  const inferredPairs = buildSpotifySearchPairs(title, artist, rawTitle);
 
   if (!query) {
     return {
+      rawQuery: "",
       title: "",
       artist: "",
       query: "",
       queries: [],
+      pairs: [],
     };
   }
 
-  const exactTrackQuery = title
-    ? artist
-      ? `track:"${title}" artist:"${artist}"`
-      : `track:"${title}"`
-    : "";
+  const exactQueries = inferredPairs.flatMap((pair) => buildSpotifyQueriesForPair(pair));
   const exactLooseQuery = artist ? `"${title}" "${artist}"` : `"${title}"`;
   const queries = Array.from(
     new Set(
-      [exactTrackQuery, exactLooseQuery, query, title]
+      [...exactQueries, exactLooseQuery, query, title, rawTitle]
         .map((value) => String(value || "").trim())
         .filter(Boolean)
     )
   );
 
   return {
+    rawQuery: stripWrappingQuotes(rawTitle),
     title,
     artist,
     query,
     queries,
+    pairs: inferredPairs,
   };
 }
 
 function parseSpotifyQueryParts(rawTitle, rawArtist) {
-  let title = String(rawTitle || "").trim();
-  let artist = String(rawArtist || "").trim();
+  let title = sanitizeSpotifySearchField(rawTitle);
+  let artist = sanitizeSpotifySearchField(rawArtist);
 
   if (!title) {
     return { title, artist };
+  }
+
+  const quotedPatternMatch = title.match(/^["'`](.+?)["'`]\s+(?:by|from|de|par)\s+(.+)$/i);
+  if (!artist && quotedPatternMatch) {
+    title = quotedPatternMatch[1].trim();
+    artist = quotedPatternMatch[2].trim();
   }
 
   if (!artist) {
@@ -2965,10 +2976,43 @@ function parseSpotifyQueryParts(rawTitle, rawArtist) {
     }
   }
 
+  if (!artist) {
+    const dashMatch = title.match(/^(.+?)\s*[-–—]\s+(.+)$/);
+    if (dashMatch) {
+      title = dashMatch[1].trim();
+      artist = dashMatch[2].trim();
+    }
+  }
+
+  if (!artist) {
+    const featuringMatch = title.match(/^(.+?)\s+(?:feat\.?|ft\.?)\s+(.+)$/i);
+    if (featuringMatch) {
+      title = featuringMatch[1].trim();
+      artist = featuringMatch[2].trim();
+    }
+  }
+
   return {
     title: stripWrappingQuotes(title),
     artist: stripWrappingQuotes(artist),
   };
+}
+
+function sanitizeSpotifySearchField(value) {
+  return stripWrappingQuotes(
+    String(value || "")
+      .replace(
+        /^(?:joue(?:\s+moi)?|mets?|mettez|lance|lancer|play|start|put on)\s+/i,
+        ""
+      )
+      .replace(
+        /^(?:la|le|les|un|une|the)\s+(?:chanson|musique|morceau|titre|song|track)\s+/i,
+        ""
+      )
+      .replace(/\s+(?:sur|on)\s+spotify$/i, "")
+      .replace(/\s+(?:s'il te plait|stp|please)$/i, "")
+      .trim()
+  );
 }
 
 function stripWrappingQuotes(value) {
@@ -3035,6 +3079,10 @@ function scoreSpotifyTrackMatch(track, request) {
   const actualArtists = (track?.artists || []).map((artist) =>
     normalizeSpotifyMatchText(artist?.name)
   );
+  const actualCombined = normalizeSpotifyMatchText(
+    `${track?.name || ""} ${(track?.artists || []).map((artist) => artist?.name || "").join(" ")}`
+  );
+  const rawQuery = normalizeSpotifyMatchText(request.rawQuery);
 
   if (!expectedTitle) {
     return 0;
@@ -3061,8 +3109,19 @@ function scoreSpotifyTrackMatch(track, request) {
     } else if (actualArtists.some((artist) => artist.includes(expectedArtist))) {
       score += 80;
     } else {
-      score -= 200;
+      return 0;
     }
+  }
+
+  if (!expectedArtist && request.pairs?.length) {
+    const pairScores = request.pairs
+      .map((pair) => scoreSpotifyPairCandidate(track, pair))
+      .sort((left, right) => right - left);
+    score += pairScores[0] || 0;
+  }
+
+  if (rawQuery) {
+    score += scoreSpotifyTokenOverlap(actualCombined, rawQuery);
   }
 
   const popularity = Number.isFinite(track?.popularity) ? track.popularity : 0;
@@ -3118,6 +3177,140 @@ function normalizeSpotifyMatchText(value) {
     .replace(/\b(feat|featuring|ft)\b/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function buildSpotifySearchPairs(title, artist, rawTitle) {
+  const pairs = [];
+  const safeTitle = stripWrappingQuotes(title);
+  const safeArtist = stripWrappingQuotes(artist);
+  const rawQuery = stripWrappingQuotes(rawTitle);
+
+  if (safeTitle && safeArtist) {
+    pairs.push({ title: safeTitle, artist: safeArtist, confidence: "explicit" });
+    return pairs;
+  }
+
+  if (!safeTitle) {
+    return pairs;
+  }
+
+  pairs.push({ title: safeTitle, artist: "", confidence: "title-only" });
+
+  const rawWords = rawQuery.split(/\s+/).filter(Boolean);
+  if (rawWords.length < 2) {
+    return pairs;
+  }
+
+  const maxArtistWords = Math.min(4, rawWords.length - 1);
+  for (let artistWords = 1; artistWords <= maxArtistWords; artistWords += 1) {
+    const splitIndex = rawWords.length - artistWords;
+    const titleCandidate = rawWords.slice(0, splitIndex).join(" ");
+    const artistCandidate = rawWords.slice(splitIndex).join(" ");
+
+    if (!titleCandidate || !artistCandidate) {
+      continue;
+    }
+
+    pairs.push({
+      title: titleCandidate,
+      artist: artistCandidate,
+      confidence: artistWords <= 2 ? "inferred-strong" : "inferred-soft",
+    });
+  }
+
+  return dedupeSpotifyPairs(pairs);
+}
+
+function buildSpotifyQueriesForPair(pair) {
+  const title = stripWrappingQuotes(pair?.title);
+  const artist = stripWrappingQuotes(pair?.artist);
+
+  if (!title) {
+    return [];
+  }
+
+  if (!artist) {
+    return [`track:"${title}"`, `"${title}"`];
+  }
+
+  return [
+    `track:"${title}" artist:"${artist}"`,
+    `"${title}" "${artist}"`,
+    `${title} ${artist}`,
+  ];
+}
+
+function dedupeSpotifyPairs(pairs) {
+  const byKey = new Map();
+
+  for (const pair of pairs || []) {
+    const title = normalizeSpotifyMatchText(pair?.title);
+    const artist = normalizeSpotifyMatchText(pair?.artist);
+    const key = `${title}::${artist}`;
+
+    if (!title || byKey.has(key)) {
+      continue;
+    }
+
+    byKey.set(key, {
+      title: stripWrappingQuotes(pair.title),
+      artist: stripWrappingQuotes(pair.artist),
+      confidence: pair.confidence || "inferred-soft",
+    });
+  }
+
+  return Array.from(byKey.values());
+}
+
+function scoreSpotifyPairCandidate(track, pair) {
+  const expectedTitle = normalizeSpotifyMatchText(pair?.title);
+  const expectedArtist = normalizeSpotifyMatchText(pair?.artist);
+  const actualTitle = normalizeSpotifyTrackTitle(track?.name);
+  const actualArtists = (track?.artists || []).map((artist) =>
+    normalizeSpotifyMatchText(artist?.name)
+  );
+
+  if (!expectedTitle || !expectedArtist) {
+    return 0;
+  }
+
+  if (actualTitle !== expectedTitle || !actualArtists.includes(expectedArtist)) {
+    return 0;
+  }
+
+  switch (pair?.confidence) {
+    case "explicit":
+      return 260;
+    case "inferred-strong":
+      return 220;
+    case "inferred-soft":
+      return 150;
+    default:
+      return 0;
+  }
+}
+
+function scoreSpotifyTokenOverlap(actualValue, expectedValue) {
+  const actualTokens = new Set(actualValue.split(" ").filter(Boolean));
+  const expectedTokens = expectedValue.split(" ").filter(Boolean);
+
+  if (expectedTokens.length === 0) {
+    return 0;
+  }
+
+  let score = 0;
+  let missingCount = 0;
+
+  for (const token of expectedTokens) {
+    if (actualTokens.has(token)) {
+      score += token.length >= 4 ? 22 : 14;
+    } else {
+      missingCount += 1;
+    }
+  }
+
+  score -= missingCount * 26;
+  return score;
 }
 
 function normalizeToolIdentifier(value) {
