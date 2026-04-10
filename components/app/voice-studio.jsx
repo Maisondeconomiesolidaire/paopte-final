@@ -102,6 +102,7 @@ export function VoiceStudio({
     music: 0,
     notes: 0,
   });
+  const sidebarScrollFrameRef = useRef(null);
   const userInputLevelStateRef = useRef({
     lowStreak: 0,
   });
@@ -303,8 +304,8 @@ export function VoiceStudio({
   }
 
   async function playSpotifySong(parameters) {
-    const searchQuery = buildSpotifySearchQuery(parameters);
-    if (!searchQuery) {
+    const searchRequest = buildSpotifySearchQuery(parameters);
+    if (!searchRequest.query) {
       throw new Error("Le titre du morceau Spotify est manquant.");
     }
 
@@ -313,20 +314,27 @@ export function VoiceStudio({
 
     try {
       const accessToken = await ensureFreshSpotifyAccessToken();
-      const searchParams = new URLSearchParams({
-        q: searchQuery,
-        type: "track",
-        limit: "1",
-        market: "from_token",
-      });
-      const [searchResult, device] = await Promise.all([
-        spotifyApiFetch(`/search?${searchParams.toString()}`, accessToken),
+      const [searchResponses, device] = await Promise.all([
+        Promise.all(
+          searchRequest.queries.map((query) => {
+            const searchParams = new URLSearchParams({
+              q: query,
+              type: "track",
+              limit: "10",
+              market: "from_token",
+            });
+
+            return spotifyApiFetch(`/search?${searchParams.toString()}`, accessToken);
+          })
+        ),
         ensureSpotifyDevice(accessToken),
       ]);
-      const track = searchResult?.tracks?.items?.[0];
+      const track = selectBestSpotifyTrackMatch(searchResponses, searchRequest);
 
       if (!track?.uri) {
-        throw new Error(`Je n'ai pas trouvé de morceau Spotify pour "${searchQuery}".`);
+        throw new Error(
+          `Je n'ai pas trouvé de morceau Spotify suffisamment précis pour "${searchRequest.query}".`
+        );
       }
 
       await startSpotifyTrackPlayback(accessToken, device, track.uri);
@@ -438,6 +446,7 @@ export function VoiceStudio({
 
     setLocalCreatedNotes((current) => mergeNotes(current, [createdNote]));
     setActiveSidebarPanel("notes");
+    scrollSidebarPanelIntoView("notes");
     setToolNotice(confirmationMessage);
     setRequestError("");
 
@@ -447,11 +456,13 @@ export function VoiceStudio({
   function openEventFocus(event) {
     setFocusedSurface({ type: "event", item: event });
     setActiveSidebarPanel("agenda");
+    scrollSidebarPanelIntoView("agenda");
   }
 
   function openNoteFocus(note) {
     setFocusedSurface({ type: "note", item: note });
     setActiveSidebarPanel("notes");
+    scrollSidebarPanelIntoView("notes");
   }
 
   async function handleOpenCalendarEvent(parameters) {
@@ -484,6 +495,18 @@ export function VoiceStudio({
     return confirmationMessage;
   }
 
+  async function handleCloseFocusedSurface() {
+    if (!focusedSurface) {
+      return "Aucun élément n'est actuellement ouvert.";
+    }
+
+    const closedLabel = focusedSurface.type === "note" ? "Note refermée." : "Évènement refermé.";
+    setFocusedSurface(null);
+    setToolNotice(closedLabel);
+    setRequestError("");
+    return closedLabel;
+  }
+
   async function handleDeleteCalendarEvent(parameters) {
     const normalizedEvent = normalizeDeleteCalendarToolParameters(parameters, sessionTimeZone);
     const deletedEvent = await deleteCalendarEvent(normalizedEvent);
@@ -493,6 +516,7 @@ export function VoiceStudio({
       current.filter((event) => String(event._id) !== String(deletedEvent._id))
     );
     setActiveSidebarPanel("agenda");
+    scrollSidebarPanelIntoView("agenda");
     setToolNotice(confirmationMessage);
     setRequestError("");
 
@@ -508,6 +532,7 @@ export function VoiceStudio({
       current.filter((note) => String(note._id) !== String(deletedNote._id))
     );
     setActiveSidebarPanel("notes");
+    scrollSidebarPanelIntoView("notes");
     setToolNotice(confirmationMessage);
     setRequestError("");
 
@@ -535,6 +560,16 @@ export function VoiceStudio({
     focus_calendar_event: handleOpenCalendarEvent,
     ouvrirEvenement: handleOpenCalendarEvent,
     ouvrir_evenement: handleOpenCalendarEvent,
+    closeFocusedSurface: handleCloseFocusedSurface,
+    close_focused_surface: handleCloseFocusedSurface,
+    closeNote: handleCloseFocusedSurface,
+    close_note: handleCloseFocusedSurface,
+    closeCalendarEvent: handleCloseFocusedSurface,
+    close_calendar_event: handleCloseFocusedSurface,
+    fermerNote: handleCloseFocusedSurface,
+    fermer_note: handleCloseFocusedSurface,
+    fermerEvenement: handleCloseFocusedSurface,
+    fermer_evenement: handleCloseFocusedSurface,
     deleteCalendarEvent: handleDeleteCalendarEvent,
     delete_calendar_event: handleDeleteCalendarEvent,
     removeCalendarEvent: handleDeleteCalendarEvent,
@@ -592,6 +627,7 @@ export function VoiceStudio({
 
     setLocalCreatedEvents((current) => mergeEvents(current, [createdEvent]));
     setActiveSidebarPanel("agenda");
+    scrollSidebarPanelIntoView("agenda");
     setToolNotice(confirmationMessage);
     setRequestError("");
 
@@ -862,6 +898,10 @@ export function VoiceStudio({
       const toolName = extractToolName(toolCall);
       const parameters = extractToolParameters(toolCall);
 
+      if (looksLikeCloseTool(toolName)) {
+        return await handleCloseFocusedSurface();
+      }
+
       if (looksLikeOpenTool(toolName)) {
         if (looksLikeNoteTool(toolName)) {
           return await handleOpenNote(parameters);
@@ -1004,66 +1044,76 @@ export function VoiceStudio({
 
   useEffect(() => {
     const root = sidebarScrollContainerRef.current;
-    const cards = Object.entries(sidebarPanelRefs)
-      .map(([panel, ref]) => ({ panel, element: ref.current }))
-      .filter((entry) => entry.element);
-
-    if (!root || cards.length === 0) {
+    if (!root) {
       return;
     }
+    const measurePanels = () => {
+      const rootRect = root.getBoundingClientRect();
+      const rootCenter = rootRect.top + rootRect.height / 2;
+      let bestPanel = null;
+      let bestDistance = Number.POSITIVE_INFINITY;
 
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          const panel = entry.target.getAttribute("data-panel");
-          if (!panel) {
-            continue;
-          }
-
-          sidebarPanelRatiosRef.current[panel] = entry.intersectionRatio;
-          if (entry.isIntersecting) {
-            setRevealedSidebarPanels((current) =>
-              current[panel] ? current : { ...current, [panel]: true }
-            );
-          }
+      for (const [panel, ref] of Object.entries(sidebarPanelRefs)) {
+        const element = ref.current;
+        if (!element) {
+          continue;
         }
 
-        const topPanel = Object.entries(sidebarPanelRatiosRef.current).sort(
-          (left, right) => right[1] - left[1]
-        )[0];
+        const rect = element.getBoundingClientRect();
+        const visibleHeight =
+          Math.min(rect.bottom, rootRect.bottom) - Math.max(rect.top, rootRect.top);
+        const ratio = Math.max(0, Math.min(1, visibleHeight / Math.max(rect.height, 1)));
+        sidebarPanelRatiosRef.current[panel] = ratio;
 
-        if (topPanel?.[0] && topPanel[1] >= 0.55) {
-          setActiveSidebarPanel((current) => (current === topPanel[0] ? current : topPanel[0]));
+        const panelCenter = rect.top + rect.height / 2;
+        const distance = Math.abs(panelCenter - rootCenter);
+        if (ratio > 0.1 && distance < bestDistance) {
+          bestDistance = distance;
+          bestPanel = panel;
         }
-      },
-      {
-        root,
-        threshold: [0.2, 0.4, 0.55, 0.75, 0.95],
       }
-    );
 
-    cards.forEach(({ element }) => observer.observe(element));
+      setRevealedSidebarPanels((current) => {
+        const nextPanels = { ...current };
+        let hasChanged = false;
+
+        for (const [panel, ratio] of Object.entries(sidebarPanelRatiosRef.current)) {
+          if (!current[panel] && ratio > 0.08) {
+            nextPanels[panel] = true;
+            hasChanged = true;
+          }
+        }
+
+        return hasChanged ? nextPanels : current;
+      });
+
+      if (bestPanel) {
+        setActiveSidebarPanel((current) => (current === bestPanel ? current : bestPanel));
+      }
+    };
+
+    const handleScroll = () => {
+      if (sidebarScrollFrameRef.current) {
+        cancelAnimationFrame(sidebarScrollFrameRef.current);
+      }
+
+      sidebarScrollFrameRef.current = requestAnimationFrame(measurePanels);
+    };
+
+    measurePanels();
+    root.addEventListener("scroll", handleScroll, { passive: true });
+    window.addEventListener("resize", handleScroll);
+
     return () => {
-      observer.disconnect();
+      if (sidebarScrollFrameRef.current) {
+        cancelAnimationFrame(sidebarScrollFrameRef.current);
+        sidebarScrollFrameRef.current = null;
+      }
+
+      root.removeEventListener("scroll", handleScroll);
+      window.removeEventListener("resize", handleScroll);
     };
   }, [sidebarPanelRefs]);
-
-  useEffect(() => {
-    if (!activeSidebarPanel) {
-      return;
-    }
-
-    const card = sidebarPanelRefs[activeSidebarPanel]?.current;
-    const root = sidebarScrollContainerRef.current;
-    if (!card || !root) {
-      return;
-    }
-
-    card.scrollIntoView({
-      behavior: "smooth",
-      block: "nearest",
-    });
-  }, [activeSidebarPanel, sidebarPanelRefs]);
 
   useEffect(() => {
     if (status !== "connected") {
@@ -1241,6 +1291,28 @@ export function VoiceStudio({
     await conversation.endSession();
   }
 
+  function scrollSidebarPanelIntoView(panel) {
+    const element = sidebarPanelRefs[panel]?.current;
+    if (!element) {
+      return;
+    }
+
+    element.scrollIntoView({
+      behavior: "smooth",
+      block: "nearest",
+    });
+  }
+
+  function toggleSidebarPanel(panel) {
+    setActiveSidebarPanel((current) => {
+      const nextPanel = current === panel ? null : panel;
+      if (nextPanel) {
+        scrollSidebarPanelIntoView(nextPanel);
+      }
+      return nextPanel;
+    });
+  }
+
   const isAgendaPanelActive = activeSidebarPanel === "agenda";
   const isMusicPanelActive = activeSidebarPanel === "music";
   const isNotesPanelActive = activeSidebarPanel === "notes";
@@ -1264,7 +1336,7 @@ export function VoiceStudio({
             >
               <button
                 type="button"
-                onClick={() => setActiveSidebarPanel("agenda")}
+                onClick={() => toggleSidebarPanel("agenda")}
                 className="flex w-full items-center justify-between gap-4 px-5 py-5 text-left"
               >
                 <div className="flex items-center gap-4">
@@ -1344,7 +1416,7 @@ export function VoiceStudio({
             >
               <button
                 type="button"
-                onClick={() => setActiveSidebarPanel("music")}
+                onClick={() => toggleSidebarPanel("music")}
                 className="flex w-full items-center justify-between gap-4 px-5 py-5 text-left"
               >
                 <div className="flex items-center gap-4">
@@ -1521,7 +1593,7 @@ export function VoiceStudio({
             >
               <button
                 type="button"
-                onClick={() => setActiveSidebarPanel("notes")}
+                onClick={() => toggleSidebarPanel("notes")}
                 className="flex w-full items-center justify-between gap-4 px-5 py-5 text-left"
               >
                 <div className="flex items-center gap-4">
@@ -1731,8 +1803,8 @@ export function VoiceStudio({
 
       {focusedSurface ? (
         <div className="absolute inset-0 z-30 bg-[linear-gradient(180deg,rgba(10,34,31,0.24),rgba(10,34,31,0.42))] backdrop-blur-md">
-          <div className="flex h-full w-full flex-col">
-            <div className="flex items-center justify-between px-6 py-5 sm:px-8 lg:px-10">
+          <div className="flex h-full w-full flex-col overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-4 sm:px-8 lg:px-10">
               <div className="rounded-full border border-white/20 bg-white/12 px-4 py-2 text-[11px] uppercase tracking-[0.28em] text-white/82">
                 {focusedSurface.type === "note" ? "Note ouverte" : "Évènement ouvert"}
               </div>
@@ -1745,8 +1817,9 @@ export function VoiceStudio({
               </button>
             </div>
 
-            <div className="flex flex-1 items-center justify-center px-6 pb-8 sm:px-8 lg:px-12">
-              <div className="flex h-full w-full max-w-6xl flex-col justify-center rounded-[40px] border border-white/14 bg-[linear-gradient(180deg,rgba(255,255,255,0.2),rgba(255,255,255,0.08))] p-8 text-left shadow-[0_40px_120px_rgba(0,0,0,0.25)] backdrop-blur-2xl sm:p-10 lg:p-14">
+            <div className="flex min-h-0 flex-1 items-stretch justify-center px-4 pb-4 sm:px-8 sm:pb-8 lg:px-12">
+              <div className="flex h-full min-h-0 w-full max-w-6xl flex-col overflow-hidden rounded-[28px] border border-white/14 bg-[linear-gradient(180deg,rgba(255,255,255,0.2),rgba(255,255,255,0.08))] text-left shadow-[0_40px_120px_rgba(0,0,0,0.25)] backdrop-blur-2xl sm:rounded-[34px]">
+                <div className="min-h-0 flex-1 overflow-y-auto p-6 sm:p-10 lg:p-14">
                 {focusedSurface.type === "note" ? (
                   <>
                     <p className="text-[11px] uppercase tracking-[0.32em] text-white/68">
@@ -1755,7 +1828,7 @@ export function VoiceStudio({
                     <p className="mt-3 text-sm uppercase tracking-[0.22em] text-white/52">
                       {formatStoredNoteDate(focusedSurface.item)}
                     </p>
-                    <p className="mt-8 max-w-4xl text-3xl font-semibold leading-[1.2] tracking-[-0.04em] text-white sm:text-4xl lg:text-6xl">
+                    <p className="mt-8 max-w-4xl text-2xl font-semibold leading-[1.2] tracking-[-0.04em] text-white sm:text-4xl lg:text-6xl">
                       {focusedSurface.item.content}
                     </p>
                   </>
@@ -1767,7 +1840,7 @@ export function VoiceStudio({
                     <p className="mt-3 text-sm uppercase tracking-[0.22em] text-white/52">
                       {formatEventDate(focusedSurface.item.startAt)}
                     </p>
-                    <p className="mt-8 max-w-4xl text-3xl font-semibold leading-[1.2] tracking-[-0.04em] text-white sm:text-4xl lg:text-6xl">
+                    <p className="mt-8 max-w-4xl text-2xl font-semibold leading-[1.2] tracking-[-0.04em] text-white sm:text-4xl lg:text-6xl">
                       {focusedSurface.item.title}
                     </p>
                     <div className="mt-10 flex flex-wrap gap-3">
@@ -1782,6 +1855,7 @@ export function VoiceStudio({
                     </div>
                   </>
                 )}
+                </div>
               </div>
             </div>
           </div>
@@ -1970,6 +2044,7 @@ function buildProfileContext(
       : null,
     "Si l'utilisateur demande d'ajouter un rendez-vous ou un évènement à son calendrier, utilise l'outil client createCalendarEvent avec un titre et une date de début précise.",
     "Si l'utilisateur demande d'ouvrir, afficher ou mettre en focus un rendez-vous ou un évènement, utilise l'outil client openCalendarEvent.",
+    "Si l'utilisateur demande de fermer l'élément actuellement ouvert, utilise l'outil client closeFocusedSurface.",
     "Si l'utilisateur demande de supprimer un rendez-vous ou un évènement de son calendrier, utilise l'outil client deleteCalendarEvent avec le titre ou un extrait suffisant pour l'identifier.",
     "Si l'utilisateur demande de noter, mémoriser ou enregistrer une information, utilise l'outil client createNote avec le contenu, le type de note et la date si elle est connue.",
     "Si l'utilisateur demande d'ouvrir, afficher ou mettre en focus une note, utilise l'outil client openNote.",
@@ -2701,6 +2776,21 @@ function looksLikeOpenTool(toolName) {
   );
 }
 
+function looksLikeCloseTool(toolName) {
+  const normalized = normalizeToolIdentifier(toolName);
+
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    normalized.includes("close") ||
+    normalized.includes("dismiss") ||
+    normalized.includes("hide") ||
+    normalized.includes("fermer")
+  );
+}
+
 function looksLikeNoteTool(toolName) {
   const normalized = normalizeToolIdentifier(toolName);
 
@@ -2773,7 +2863,7 @@ function inferSidebarPanelFromText(text) {
 
 function buildSpotifySearchQuery(parameters) {
   const normalizedParameters = normalizeToolParameters(parameters);
-  const title = firstNonEmptyString(
+  const rawTitle = firstNonEmptyString(
     normalizedParameters?.query,
     normalizedParameters?.track,
     normalizedParameters?.song,
@@ -2781,17 +2871,219 @@ function buildSpotifySearchQuery(parameters) {
     normalizedParameters?.music,
     normalizedParameters?.prompt
   );
-  const artist = firstNonEmptyString(
+  const rawArtist = firstNonEmptyString(
     normalizedParameters?.artist,
     normalizedParameters?.artistName,
     normalizedParameters?.singer
   );
+  const parsedRequest = parseSpotifyQueryParts(rawTitle, rawArtist);
+  const title = parsedRequest.title;
+  const artist = parsedRequest.artist;
+  const query = title ? (artist ? `${title} ${artist}` : title) : artist;
 
-  if (!title) {
-    return artist;
+  if (!query) {
+    return {
+      title: "",
+      artist: "",
+      query: "",
+      queries: [],
+    };
   }
 
-  return artist ? `${title} ${artist}` : title;
+  const exactTrackQuery = title
+    ? artist
+      ? `track:"${title}" artist:"${artist}"`
+      : `track:"${title}"`
+    : "";
+  const exactLooseQuery = artist ? `"${title}" "${artist}"` : `"${title}"`;
+  const queries = Array.from(
+    new Set(
+      [exactTrackQuery, exactLooseQuery, query, title]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+    )
+  );
+
+  return {
+    title,
+    artist,
+    query,
+    queries,
+  };
+}
+
+function parseSpotifyQueryParts(rawTitle, rawArtist) {
+  let title = String(rawTitle || "").trim();
+  let artist = String(rawArtist || "").trim();
+
+  if (!title) {
+    return { title, artist };
+  }
+
+  if (!artist) {
+    const separatorMatch = title.match(
+      /^(.+?)\s+(?:by|from|de|par)\s+(.+)$/i
+    );
+
+    if (separatorMatch) {
+      title = separatorMatch[1].trim();
+      artist = separatorMatch[2].trim();
+    }
+  }
+
+  return {
+    title: stripWrappingQuotes(title),
+    artist: stripWrappingQuotes(artist),
+  };
+}
+
+function stripWrappingQuotes(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .trim();
+}
+
+function selectBestSpotifyTrackMatch(searchResponses, request) {
+  const candidates = dedupeSpotifyTracks(
+    (searchResponses || []).flatMap((response) => response?.tracks?.items || [])
+  );
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const scoredCandidates = candidates
+    .map((track) => ({
+      track,
+      score: scoreSpotifyTrackMatch(track, request),
+    }))
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) => right.score - left.score);
+
+  const bestMatch = scoredCandidates[0];
+  if (!bestMatch) {
+    return null;
+  }
+
+  const titleMatched = isStrongSpotifyTitleMatch(bestMatch.track, request.title);
+  const artistMatched = request.artist
+    ? isStrongSpotifyArtistMatch(bestMatch.track, request.artist)
+    : true;
+
+  if (!titleMatched || !artistMatched) {
+    return null;
+  }
+
+  return bestMatch.track;
+}
+
+function dedupeSpotifyTracks(tracks) {
+  const byUri = new Map();
+
+  for (const track of tracks || []) {
+    if (!track?.uri) {
+      continue;
+    }
+
+    if (!byUri.has(track.uri)) {
+      byUri.set(track.uri, track);
+    }
+  }
+
+  return Array.from(byUri.values());
+}
+
+function scoreSpotifyTrackMatch(track, request) {
+  const expectedTitle = normalizeSpotifyMatchText(request.title);
+  const expectedArtist = normalizeSpotifyMatchText(request.artist);
+  const actualTitle = normalizeSpotifyTrackTitle(track?.name);
+  const actualArtists = (track?.artists || []).map((artist) =>
+    normalizeSpotifyMatchText(artist?.name)
+  );
+
+  if (!expectedTitle) {
+    return 0;
+  }
+
+  let score = 0;
+
+  if (actualTitle === expectedTitle) {
+    score += 300;
+  } else if (
+    actualTitle.startsWith(expectedTitle) ||
+    expectedTitle.startsWith(actualTitle)
+  ) {
+    score += 180;
+  } else if (actualTitle.includes(expectedTitle) || expectedTitle.includes(actualTitle)) {
+    score += 120;
+  } else {
+    return 0;
+  }
+
+  if (expectedArtist) {
+    if (actualArtists.includes(expectedArtist)) {
+      score += 250;
+    } else if (actualArtists.some((artist) => artist.includes(expectedArtist))) {
+      score += 80;
+    } else {
+      score -= 200;
+    }
+  }
+
+  const popularity = Number.isFinite(track?.popularity) ? track.popularity : 0;
+  score += popularity / 10;
+
+  return score;
+}
+
+function isStrongSpotifyTitleMatch(track, requestedTitle) {
+  const expectedTitle = normalizeSpotifyMatchText(requestedTitle);
+  const actualTitle = normalizeSpotifyTrackTitle(track?.name);
+
+  if (!expectedTitle || !actualTitle) {
+    return false;
+  }
+
+  return (
+    actualTitle === expectedTitle ||
+    actualTitle.startsWith(expectedTitle) ||
+    expectedTitle.startsWith(actualTitle)
+  );
+}
+
+function isStrongSpotifyArtistMatch(track, requestedArtist) {
+  const expectedArtist = normalizeSpotifyMatchText(requestedArtist);
+  const actualArtists = (track?.artists || []).map((artist) =>
+    normalizeSpotifyMatchText(artist?.name)
+  );
+
+  if (!expectedArtist) {
+    return true;
+  }
+
+  return actualArtists.includes(expectedArtist);
+}
+
+function normalizeSpotifyTrackTitle(value) {
+  return normalizeSpotifyMatchText(
+    String(value || "")
+      .replace(/\([^)]*\)/g, " ")
+      .replace(/\[[^\]]*]/g, " ")
+      .replace(/\s+-\s+(remaster(ed)?|live|radio edit|edit|version|mono|stereo).*$/i, " ")
+  );
+}
+
+function normalizeSpotifyMatchText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\b(feat|featuring|ft)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function normalizeToolIdentifier(value) {
