@@ -42,6 +42,8 @@ const SPOTIFY_NORMAL_VOLUME = 0.9;
 const SPOTIFY_AGENT_DUCKED_VOLUME = 0.18;
 const SPOTIFY_USER_DUCKED_VOLUME = 0.06;
 const USER_VAD_ACTIVE_THRESHOLD = 0.18;
+const USER_INPUT_VOLUME_ACTIVE_THRESHOLD = 0.12;
+const USER_INPUT_VOLUME_POLL_MS = 120;
 const USER_VAD_RELEASE_DELAY_MS = 1400;
 
 const formatter = new Intl.DateTimeFormat("fr-FR", {
@@ -908,6 +910,39 @@ export function VoiceStudio({
 
     void setSpotifyPlaybackVolume(targetSpotifyVolume);
   }, [spotifySession?.accessToken, isSpotifyReady, targetSpotifyVolume]);
+
+  useEffect(() => {
+    if (status !== "connected") {
+      return;
+    }
+
+    let cancelled = false;
+    const intervalId = setInterval(() => {
+      const getInputVolume = conversation?.getInputVolume;
+      if (typeof getInputVolume !== "function") {
+        return;
+      }
+
+      Promise.resolve(getInputVolume.call(conversation))
+        .then((inputVolume) => {
+          if (cancelled || typeof inputVolume !== "number") {
+            return;
+          }
+
+          if (inputVolume >= USER_INPUT_VOLUME_ACTIVE_THRESHOLD) {
+            markUserSpeaking();
+          }
+        })
+        .catch(() => {
+          // Ignore transient meter failures; the next poll will retry.
+        });
+    }, USER_INPUT_VOLUME_POLL_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, [conversation, status]);
 
   useEffect(() => {
     return () => {
