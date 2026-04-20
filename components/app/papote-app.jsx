@@ -15,15 +15,25 @@ import { VoiceStudio } from "@/components/app/voice-studio";
 export function PapoteApp() {
   const { isLoaded, isSignedIn, redirectToSignIn } = useAuth();
   const { isLoading: isConvexLoading, isAuthenticated } = useConvexAuth();
+  const [returnBackUrl, setReturnBackUrl] = useState("/");
   const connectingState = (
     <CenteredState title="Connexion en cours" description="Connexion en cours..." />
   );
 
   useEffect(() => {
-    if (isLoaded && isSignedIn === false) {
-      void redirectToSignIn({ returnBackUrl: "/" });
+    if (typeof window === "undefined") {
+      return;
     }
-  }, [isLoaded, isSignedIn, redirectToSignIn]);
+
+    const currentPath = `${window.location.pathname}${window.location.search}`;
+    setReturnBackUrl(currentPath || "/");
+  }, []);
+
+  useEffect(() => {
+    if (isLoaded && isSignedIn === false) {
+      void redirectToSignIn({ returnBackUrl });
+    }
+  }, [isLoaded, isSignedIn, redirectToSignIn, returnBackUrl]);
 
   if (!isLoaded) {
     return connectingState;
